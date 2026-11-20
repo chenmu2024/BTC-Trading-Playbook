@@ -36,3 +36,10 @@
 - 策略版本化，复盘不允许用事后数据修改过去的判断。
 
 更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 可以直接运行的公开行情研究引擎（2026-11-21 新增）
+- 入口：`python -m engine.cli --config config/strategy.yaml --output-dir output`（Python 3.11+；`pip install -r requirements.txt`）。
+- 输出：同时保存 **原始行情快照 JSON、结构化分析 JSON、中文 Markdown 报告**，方便下一次复盘。
+- GitHub 页面操作：打开 **Actions → BTC market snapshot (manual, research only) → Run workflow**，运行结束下载 artifacts 中的报告，无需本地电脑、交易API密钥或付费行情服务。GitHub Actions资源额度和交易所网络访问以实际平台为准。
+- 运行状态与限制见 [docs/ENGINE_USAGE.md](docs/ENGINE_USAGE.md)；此引擎仅有 **EMA/前高前低/扫盘代理/合约K线Delta与OI/费率**。并未复刻v3.3/Eric/V1.1完整信号。不要把代理读数当成原指标。
+- 离线自动测试在每次push运行： [Actions](https://github.com/chenmu2024/BTC-Trading-Playbook/actions)；仅编译和单元测试通过不能证明策略盈利或原Pine一致。

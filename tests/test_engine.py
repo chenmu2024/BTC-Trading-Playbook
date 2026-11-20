@@ -49,7 +49,7 @@ class PublicDataTests(unittest.TestCase):
         cases=sweep_candidates(b,20,4,0.8)
         self.assertEqual(cases[-1]["direction"],"LONG")
         self.assertEqual(cases[-1]["stage"],"SWEEP_CANDIDATE_WAIT_BMS")
-        b.append(dict(b[-1], open_time_ms=60*3600000, close_time_ms=61*3600000-1,low=899))
+        b.append(dict(b[-1], open_time_ms=60*3600000, close_time_ms=61*3600000-1,low=899,close=900))
         self.assertEqual(sweep_candidates(b,20,4,0.8)[-1]["stage"],"INVALID")
 
     def test_taker_delta_explicit_units(self):

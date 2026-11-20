@@ -1,0 +1,25 @@
+name: BTC market snapshot (manual, research only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public_market_report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - name: Read PUBLIC Binance USD-M and analyze; no orders
+        run: python -m engine.cli --config config/strategy.yaml --output-dir output
+      - name: Keep audit snapshots and reports even when an API is unavailable
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btcusdt-research-snapshot
+          path: output/
+          if-no-files-found: warn
+          retention-days: 30
