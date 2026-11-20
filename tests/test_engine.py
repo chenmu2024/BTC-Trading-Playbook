@@ -1,4 +1,9 @@
 import unittest
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 from engine.market import parse_klines, ema, trend, levels, sweep_candidates, delta_summary, derivatives, analyze, markdown_report
 
 
@@ -61,6 +66,28 @@ class PublicDataTests(unittest.TestCase):
         d=derivatives({"oi":None,"funding":None})
         self.assertEqual(d["oi"]["status"],"UNKNOWN")
         self.assertEqual(d["funding"]["status"],"UNKNOWN")
+
+    def test_offline_cli_saves_valid_audit_snapshot(self):
+        bars = mkbars()
+        snap = {"market":"USD-M_PERPETUAL","exchange":"Binance","symbol":"BTCUSDT",
+                "fetched_at_utc":"2026-11-21T00:00:00+00:00",
+                "klines":{tf:bars for tf in ("1w","1d","4h","1h","30m")},
+                "oi":None,"funding":None,"errors":{}}
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as folder:
+            inp = Path(folder) / "input.json"
+            inp.write_text(json.dumps(snap), encoding="utf-8")
+            out = Path(folder) / "out"
+            proc = subprocess.run([sys.executable,"-m","engine.cli","--config","config/strategy.yaml",
+                                   "--snapshot-file",str(inp),"--output-dir",str(out)],
+                                   cwd=root, capture_output=True, text=True)
+            self.assertEqual(proc.returncode,0,proc.stderr)
+            saved = list(out.glob("*.snapshot.json"))
+            self.assertEqual(len(saved),1)
+            decoded = json.loads(saved[0].read_text(encoding="utf-8"))
+            self.assertEqual(decoded["symbol"],"BTCUSDT")
+            self.assertEqual(len(list(out.glob("*.md"))),1)
+            self.assertEqual(len(list(out.glob("BTCUSDT_*.json"))),2)
 
     def test_report_does_not_invent_pine_signals(self):
         b=mkbars()

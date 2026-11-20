@@ -44,7 +44,7 @@ def main() -> int:
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     md_path.write_text(markdown_report(report), encoding="utf-8")
     snapshot_path = directory / f"BTCUSDT_{stamp}.snapshot.json"
-    snapshot_path.write_text(json.dumps(snap, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+    snapshot_path.write_text(json.dumps(snap, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(markdown_report(report))
     print(f"Saved: {json_path}, {md_path} and {snapshot_path}")
     return 0 if report["decision"] != "DATA_INSUFFICIENT" else 2
