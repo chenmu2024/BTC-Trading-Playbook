@@ -1,0 +1,20 @@
+# Secrets, accounts, and local settings
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*credentials*
+*secret*
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+.vscode/
+.idea/
+# Local and potentially sensitive market/account exports
+private/
+local-reports/
+data/raw/
+reports/private/

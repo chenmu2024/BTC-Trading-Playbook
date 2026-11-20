@@ -1,0 +1,52 @@
+schema_version: "1.0"
+project: BTC-Trading-Playbook
+status: research_only
+analysis:
+  base_exchange: Binance
+  preferred_market: USD-M_PERPETUAL
+  symbol: BTCUSDT
+  timezone_report: Asia/Taipei
+  timezone_canonical: UTC
+  require_closed_candles: true
+  timeframes: ["1w", "1d", "4h", "1h", "30m"]
+  primary_execution_timeframe: "1h"
+  default_missing_indicator_state: UNKNOWN
+trend:
+  model: ema_proxy
+  ema_fast: 50
+  ema_slow: 200
+  require_previous_closed_htf_bar: true
+support_resistance:
+  canonical_source: pine/strong_support_resistance_v3_3.pine
+  current_external_parity_verified: false
+  fallback: prior_closed_bar_extrema_proxy
+  proxy_must_be_labelled: true
+swing:
+  canonical_source: pine/eric_swing_filter_v1_9_10.pine
+  pine_compile_replay_verified: false
+  external_parity_verified: false
+liquidity:
+  canonical_source: pine/liquidity_sweep_v1_1_diagnostic.pine
+  lookback_bars: 20
+  confirm_bars: 4
+  average_volume_bars: 20
+  minimum_sweep_volume_ratio: 0.8
+  atr_period: 14
+  stop_atr_buffer: 0.2
+flow:
+  delta_kind: estimated_lower_timeframe
+  oi_required_to_analyze: false
+  funding_required_to_analyze: false
+  all_indicators_must_align: false
+  absent_data_means_unknown: true
+risk:
+  trend_trade_max_equity_fraction: 0.005
+  countertrend_max_equity_fraction: 0.0025
+  baseline_target_r: 2.0
+  allow_averaging_down: false
+  auto_trading_enabled: false
+validation:
+  v1_0_backtest_profitable: false
+  v1_1_backtest_verified: false
+  full_strategy_profitable_verified: false
+  allow_claims_of_live_indicator_parity: false
