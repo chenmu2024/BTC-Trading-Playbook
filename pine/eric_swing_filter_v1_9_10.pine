@@ -1,0 +1,1886 @@
+//@version=6
+// ============================================================================
+// Eric Swing Filter v1.9.10 · Compact Event Labels & Exact Gap Diagnostics (experimental)
+// Built from the user's Eric v1.7.6, preserving LC2→RSI20→Stoch26→K4→D3.
+// v1.9.3: Retain v1.9.2 synthetic-chart guards; expire FS on opposite Extreme.
+// Prevent an old opposite-cycle Failure Swing from activating after regime flip.
+// Fix misleading bullish/bearish divergence action captions; preserve engine.
+// NEW A: Overbought/oversold reversal requires consecutive IN candles and
+//        sufficient D3 retreat from the observed episode extreme.
+// NEW B: Divergence uses the legacy extreme-to-extreme raw candidate logic,
+//        then optionally waits up to N closed bars for price recovery/rejection.
+//        Invalidations and stale candidates never become confirmed signals.
+// Baseline quality gates can be disabled in inputs for A/B comparison.
+// IMPORTANT: v1.9.10 HAS NOT been compiled or replay-verified in TradingView.
+// Historical v1.7.3/v1.7.6 audit results do NOT validate this revision.
+// v1.9.7 inherits v1.9.5 dynamic JSON alerts on close-bar events (freq_all gated by confirmed bar).
+//         MTF new-sync requires fresh preceding bar; research parameters enter event_id.
+// New sidecar events are NOT entries for an automated trading strategy.
+// Not an automated-trading strategy. Do not infer profitability from labels.
+// ============================================================================
+// ============================================================================
+// v1.7.6 原版说明保留用于可追溯性（不得当作v1.8完成审计）：RSI 零区间信号保护
+// - RSI 区间为零或数据缺失时输出无效值，不以归零值驱动信号。
+// - 连续有效 K 数达到 K平滑+D平滑-1 后恢复 D3；相邻有效 K 才判断事件。
+// - v1.9.4无效期间清除Episode状态；背离不跨数据中断配对，价格失效位继续检查。
+// - 主图与 MTF 同步保护；数据恢复本身不触发共振告警。
+// 以下保留 v1.7.5 的修复：
+// - 面板保留最近已收盘背离候选；候选标签仍只在收盘生成。
+// - 其他周期开关不再覆盖五个指定周期的禁用设置。
+// - Extreme 必须小于 50；主图与 MTF 使用相同数据就绪口径。
+// - 保留高周期防重绘取数；共振告警延迟见参数说明。
+// ----------------------------------------------------------------------------
+// 以下为 v1.7.3 的历史审计记录，并非 v1.7.6 的测试结果：
+// 2026-10-02 Final Reliability Audit 结果：PASS
+//
+// 4H 核心审计：
+// - 同 bar 多事件：0
+// - Ordinary + Reversal 同 bar：0
+// - 未收盘正式事件：0
+// - Reversal 无 Ordinary 前序：0
+// - Reversal 相位非 IN：0
+// - 事件不在 Extreme：0
+// - Reset 残留：0
+// - Episode 方向冲突：0
+// - Reversal latch 无 Ordinary：0
+// - Ordinary / Reversal 重复：0 / 0
+// - 每个 Episode 最大 Ordinary=1、Reversal=1
+//
+// Edge：
+// - Extreme 早于 OUT：0
+// - Ordinary 事件非 OUT：0
+// - 25→40 跳入：0
+// - 直接跨侧：0
+// - Ordinary 后重新进入 Extreme：存在，但 latch 正常阻止重复事件，非错误
+//
+// MTF：30m 当前形成中 Phase 与上一根已收盘 Phase 可出现 DIFF；
+// 这属于形成中 K 与已收盘 K 的正常差异。生产面板默认继续使用已收盘 K。
+// ============================================================================
+
+indicator("Eric Swing Filter · v1.9.10 Readable Signals", shorttitle="EricSw1910", overlay=false, max_labels_count=400, max_lines_count=200)
+
+// MTF Evidence Grade（2026-10-02）：
+// - 4H：曾做历史对照；当前实验版未完成TradingView验证
+// - 1D：部分验证（D2 PASS；D1 同方向但晚 9-10 天）
+// - 1W：部分验证（W1/W2/W3 PASS；W4 Spot 晚2周，Perp未穿-40）
+// - 1H：已找到 Eric 公共 1H BTCUSDT 截图锚（普通超买+顶背离），数值/逐K参数一致性待核
+// - 30m：确认 Eric 将其用于波段窗口，但尚缺可逐K裁决的波段过滤器精确截图锚
+//
+// ============================================================================
+// Eric Swing Filter v1.7.6（有效区间公式沿用 v1.7.3；新增零区间保护）
+// ----------------------------------------------------------------------------
+// 基于已经完成最终回归的 FINAL v1.0：
+//   LC2 -> Wilder RSI20 -> Stoch26 -> K4 -> D3
+//   ±25 = Episode 启动/重置工作线
+//   OUT = 普通状态
+//   第一次进入 ±40 = 普通超买/超卖事件
+//   普通事件之后，Extreme 内第一次 IN = 反转超买/超卖事件
+//
+// v1.6 增强内容：
+//   1) 全中文参数与 Tooltip
+//   2) 默认精简视觉，减少柱/点/锁定线造成的杂乱
+//   3) 当前“普通/反转”状态面板
+//   4) TradingView alertcondition + 动态 JSON alert()
+//   5) 接入严格背离：超买+顶背离 / 超卖+底背离
+//   6) 30分钟 / 1小时 / 4小时 / 日线 / 周线全部支持中文周期标识与事件输出
+//   7) 30分钟 / 1小时 / 4小时 / 日线 / 周线历史事件全部带中文周期前缀
+//   8) 最新一根 K 永久显示中文“当前状态徽章”，即使本 K 没有新事件也能看见状态
+//   9) 正式事件默认只在 K 线收盘后确认，降低实时抖动/重绘
+//  10) 正式策略确认仍采用此前规则：背离形成后，D3 离开 ±40 才确认
+//
+// 邮件说明：Pine 负责触发 TradingView Alert；是否发送 Email / App Push
+// 由 TradingView“创建警报”窗口勾选，脚本本身不能代替平台配置邮件地址。
+// ============================================================================
+
+// ============================================================================
+// 01 — 核心参数
+// ============================================================================
+float armLevel = input.float(25.0, "Episode 启动/重置线 ±", step=0.25, group="01｜核心参数",
+     tooltip="工作冻结线。|D3|≥该值进入一次波段 Episode；|D3|<该值或方向翻转时重置。")
+float extreme = input.float(40.0, "超买/超卖 Extreme ±", step=0.25, group="01｜核心参数",
+     tooltip="+40 为超买，-40 为超卖。阈值必须小于50，否则反转事件无法成立。普通事件在首次进入 Extreme 时触发；反转事件在 Extreme 内第一次进入 IN 时触发。")
+int rsiLen = input.int(20, "Wilder RSI 周期", minval=2, group="01｜核心参数",
+     tooltip="最终反推冻结值：20。")
+int stochLen = input.int(26, "StochRSI 窗口", minval=2, group="01｜核心参数",
+     tooltip="最终反推冻结值：26。")
+int kLen = input.int(4, "K 平滑", minval=1, group="01｜核心参数",
+     tooltip="最终反推冻结值：4。")
+int dLen = input.int(3, "D3 平滑", minval=1, group="01｜核心参数",
+     tooltip="最终主慢线使用 D3；D4 已从主模型淘汰。")
+bool enable30M = input.bool(true, "允许 30分钟 显示事件/背离", group="01｜核心参数",
+     tooltip="30分钟使用同一 FINAL 公式原生计算，但尚未完成与 4H 同等级的历史回归，因此标记为“推演｜未验证”。")
+bool enable1H = input.bool(true, "允许 1小时 显示事件/背离", group="01｜核心参数",
+     tooltip="1小时使用同一 FINAL 公式原生计算，但尚未完成与 4H 同等级的历史回归，因此标记为“推演｜未验证”。")
+bool enable4H = input.bool(true, "允许 4小时 显示事件/背离", group="01｜核心参数",
+     tooltip="4小时为原版本主要研究周期；当前实验版未完成TradingView逐根回放和独立样本外验证。")
+bool enable1D = input.bool(true, "允许 日线 显示事件/背离", group="01｜核心参数",
+     tooltip="日线使用同一 FINAL 公式原生计算，但尚未完成与 4H 同等级的历史回归，因此标记为“推演｜未验证”。")
+bool enable1W = input.bool(true, "允许 周线 显示事件/背离", group="01｜核心参数",
+     tooltip="周线使用同一 FINAL 公式原生计算，但尚未完成与 4H 同等级的历史回归，因此标记为“推演｜未验证”。")
+bool allowOtherTF = input.bool(false, "允许其他周期输出正式事件", group="01｜核心参数",
+     tooltip="默认关闭。开启后除 30分钟/1小时/4小时/日线/周线外的周期也会输出，但都属于未验证推演。")
+
+// 用 Pine 原生 timeframe 属性识别周期，避免 D/W 与 1D/1W 字符串差异造成误判。
+bool is30M = timeframe.isminutes and timeframe.multiplier == 30
+bool is1H = timeframe.isminutes and timeframe.multiplier == 60
+bool is4H = timeframe.isminutes and timeframe.multiplier == 240
+bool is1D = timeframe.isdaily and timeframe.multiplier == 1
+bool is1W = timeframe.isweekly and timeframe.multiplier == 1
+
+bool supportedTF = (is30M and enable30M) or (is1H and enable1H) or (is4H and enable4H) or (is1D and enable1D) or (is1W and enable1W)
+// 合成K线（Heikin Ashi/Renko等）的OHLC不是交易所标准成交OHLC，禁发正式信号。
+bool standardChart = chart.is_standard
+bool signalAllowed = standardChart and (supportedTF or (allowOtherTF and not (is30M or is1H or is4H or is1D or is1W)))
+bool baselineParams = armLevel == 25.0 and extreme == 40.0 and rsiLen == 20 and stochLen == 26 and kLen == 4 and dLen == 3
+bool tfValidated = false  // v1.9.6未正式编译/回放；任何周期均不得标为已验证
+string scriptVersion = "1.9.10"
+string coreConfig = str.tostring(rsiLen) + "/" + str.tostring(stochLen) + "/" + str.tostring(kLen) + "/" + str.tostring(dLen) + "/" + str.tostring(armLevel) + "/" + str.tostring(extreme)
+
+// 当前周期全部转换成中文显示。
+string tfNameCN = timeframe.period
+if is30M
+    tfNameCN := "30分钟"
+else if is1H
+    tfNameCN := "1小时"
+else if is4H
+    tfNameCN := "4小时"
+else if is1D
+    tfNameCN := "日线"
+else if is1W
+    tfNameCN := "周线"
+else if timeframe.isseconds
+    tfNameCN := str.tostring(timeframe.multiplier) + "秒"
+else if timeframe.isminutes
+    tfNameCN := str.tostring(timeframe.multiplier) + "分钟"
+else if timeframe.ismonthly
+    tfNameCN := "月线"
+
+string tfStatus = tfNameCN + "｜未启用"
+if is4H and enable4H
+    tfStatus := "4小时｜旧版历史研究，当前待验证"
+else if is30M and enable30M
+    tfStatus := "30分钟｜推演未验证"
+else if is1H and enable1H
+    tfStatus := "1小时｜截图锚待逐K核验"
+else if is1D and enable1D
+    tfStatus := "日线｜部分验证（历史）"
+else if is1W and enable1W
+    tfStatus := "周线｜部分验证（历史）"
+else if signalAllowed
+    tfStatus := tfNameCN + "｜推演未验证"
+
+string tfEvidence = "未验证"
+if is4H
+    tfEvidence := "4H旧版历史研究；v1.9.6尚未编译回放"
+else if is1D
+    tfEvidence := "部分验证"
+else if is1W
+    tfEvidence := "部分验证"
+else if is1H
+    tfEvidence := "截图锚已找到｜参数待核"
+else if is30M
+    tfEvidence := "使用确认｜待精确锚"
+else if signalAllowed
+    tfEvidence := "同公式推演｜未验证"
+
+if signalAllowed and not baselineParams
+    tfStatus := tfNameCN + "｜自定义参数未验证"
+    tfEvidence := "自定义参数｜不继承冻结基线证据"
+if not standardChart
+    tfStatus := tfNameCN + "｜非标准图表未验证"
+    tfEvidence := "非标准图表｜不继承标准OHLC证据"
+
+// ============================================================================
+// 02 — 严格背离
+// ============================================================================
+bool enableDivergence = input.bool(true, "启用严格背离模块", group="02｜严格背离",
+     tooltip="比较相邻两段Extreme区间的价格极值及同根D3，不识别同一连续Extreme区间内的双顶/双底。正式确认还要求失效位自极值K之后未被触及。数据无效期间暂停新信号，继续检查失效位；恢复后重新建立背离区间，不跨中断配对。")
+int minLegBars = input.int(4, "两个背离 Pivot 最小间隔 K 数", minval=1, group="02｜严格背离",
+     tooltip="沿用此前策略默认值：4。")
+int maxLegBars = input.int(30, "两个背离 Pivot 最大间隔 K 数（4H）", minval=5, group="02｜严格背离",
+     tooltip="4H 默认 30 根；当前 FINAL 模型主要按 4H 使用。")
+bool useStrengthFilter = input.bool(true, "过滤弱背离", group="02｜严格背离",
+     tooltip="开启后要求 D3 改善幅度和价格创新高/低幅度同时达到最低标准。")
+float minOscDelta = input.float(2.0, "D3 最小背离改善幅度", minval=0.0, step=0.25, group="02｜严格背离",
+     tooltip="底背离要求后一个 Pivot 的 D3 至少高出前一个该幅度；顶背离反之。")
+float minPriceAtr = input.float(0.10, "价格最小突破幅度（ATR 倍数）", minval=0.0, step=0.05, group="02｜严格背离",
+     tooltip="例如 0.10 = 后一个价格 Pivot 至少比前一个多突破 0.10 ATR。")
+int atrLen = input.int(14, "ATR 周期", minval=2, group="02｜严格背离")
+float stopAtrMult = input.float(0.50, "策略失效位 ATR 缓冲", minval=0.0, step=0.10, group="02｜严格背离",
+     tooltip="多头参考止损 = 底背离 Pivot Low - ATR×该值；空头相反。")
+
+// 这组参数仅过滤信号；不改原始 D3 公式，也不保证更高胜率。
+// 所有过滤均用当前已收盘 K，独立于强支撑/压力另一指标。
+bool enableExtremeQuality = input.bool(true, "区分触及与稳定超买/超卖", group="02A｜增强确认（实验）",
+     tooltip="原始普通超买/超卖事件保持不变；新加稳定超买/超卖提示，须多根已收盘K维持极端区并达到最低穿透幅度。")
+int extremeHoldBars = input.int(2, "稳定超买/超卖：持续K数", minval=2, maxval=6, group="02A｜增强确认（实验）")
+float extremePenetration = input.float(1.0, "稳定超买/超卖：超出±40的点数", minval=0.0, maxval=8.0, step=0.25, group="02A｜增强确认（实验）")
+bool enableReversalQuality = input.bool(true, "启用反转超买/超卖质量过滤", group="02A｜增强确认（实验）",
+     tooltip="普通超买超卖不变；反转事件须连续 IN 以及从本Episode极值足够回撤。关闭以复现原始v1.7.6反转事件定义。")
+int minConsecutiveIn = input.int(2, "反转：Extreme区连续IN根数", minval=1, maxval=5, group="02A｜增强确认（实验）")
+float minD3Retreat = input.float(1.00, "反转：自极值最小D3回撤点数", minval=0.0, maxval=15.0, step=0.25, group="02A｜增强确认（实验）")
+bool enableDivRecovery = input.bool(true, "背离：离开Extreme后须价格确认", group="02A｜增强确认（实验）",
+     tooltip="原始背离只在首次离开Extreme时生成候选；开启后允许在限定根数内等待收盘向有利方向移动，期间触及失效位或重入Extreme则取消。")
+int divMaxWait = input.int(3, "背离：额外最多等待K数", minval=0, maxval=10, group="02A｜增强确认（实验）",
+     tooltip="0=只在离开Extreme当根验证价格；3=离开后最多再等3根完整K。")
+float divRecoveryAtr = input.float(0.25, "背离：价格远离Pivot至少ATR倍数", minval=0.0, maxval=3.0, step=0.05, group="02A｜增强确认（实验）")
+bool divRequireDirectionClose = input.bool(true, "背离：确认K须同方向收盘", group="02A｜增强确认（实验）",
+     tooltip="底背离要求当前收盘高于前K收盘；顶背离要求当前收盘低于前K收盘。不是未来价格预测。")
+
+// ============================================================================
+// 02B — v1.9 旁路比较（不替换 Eric 原版 Extreme 背离事件）
+// ============================================================================
+bool enablePivotCompare = input.bool(true, "独立 Pivot 背离｜旁路比较", group="02B｜独立研究实验",
+     tooltip="价格与D3分别由左右确认Pivot形成，时间错开在允许范围内才配对。只做独立观察，不覆盖原有严格背离。")
+int pvLeft = input.int(3, "Pivot 左侧K数", minval=1, maxval=12, group="02B｜独立研究实验")
+int pvRight = input.int(2, "Pivot 右侧确认K数", minval=1, maxval=10, group="02B｜独立研究实验")
+int pvOffsetMax = input.int(3, "价格/D3 Pivot 最大错开K数", minval=0, maxval=10, group="02B｜独立研究实验")
+bool pvRequireExtreme = input.bool(true, "仅配对D3位于±40的Pivot", group="02B｜独立研究实验")
+bool showPivotCompareLabels = input.bool(false, "显示独立Pivot背离标签（默认关闭）", group="02B｜独立研究实验")
+bool pivotCompareAlert = input.bool(false, "启用独立Pivot观察告警（默认关闭）", group="02B｜独立研究实验")
+
+bool enablePercentileTag = input.bool(true, "显示D3历史分位数异常分级", group="02C｜市场状态观察",
+     tooltip="只统计当前K之前已完成的历史D3，P5/P95不替换±40。相等与缺样本不硬判异常。")
+int percentileBars = input.int(250, "D3历史分位数K数", minval=100, maxval=1000, group="02C｜市场状态观察")
+bool showPercentileLines = input.bool(false, "绘制分位数参考线", group="02C｜市场状态观察")
+bool enableTrendContext = input.bool(true, "显示EMA+ADX趋势风险分级", group="02C｜市场状态观察")
+int emaTrendLen = input.int(200, "趋势EMA周期", minval=30, maxval=500, group="02C｜市场状态观察")
+int adxPeriod = input.int(14, "ADX/DI计算周期", minval=5, maxval=100, group="02C｜市场状态观察")
+int adxSmooth = input.int(14, "ADX平滑周期", minval=5, maxval=100, group="02C｜市场状态观察")
+float strongAdx = input.float(25.0, "强趋势ADX阈值", minval=10.0, maxval=50.0, step=0.5, group="02C｜市场状态观察")
+bool enableFailureSwing = input.bool(true, "启用D3失败摆动观察", group="02D｜失败摆动实验",
+     tooltip="必须退出极端、发生至少一次不重入极端的回踩，再突破前次反弹/反抽的D3峰谷。是滞后确认，不是自动下单指令。")
+int fsMaxBars = input.int(18, "失败摆动观察最长K数", minval=5, maxval=60, group="02D｜失败摆动实验")
+float fsPullback = input.float(2.0, "D3二次回踩最小幅度", minval=0.5, maxval=15.0, step=0.5, group="02D｜失败摆动实验")
+bool showFailureSwingLabels = input.bool(false, "失败摆动历史标签（默认关闭）", group="02D｜失败摆动实验")
+
+// 增强质量门槛属新策略，即使原核心参数不变，也不得继承旧4H实测标签。
+bool enhancedMode = enableExtremeQuality or enableReversalQuality or enableDivRecovery or enablePivotCompare or enablePercentileTag or enableTrendContext or enableFailureSwing
+tfValidated := tfValidated and not enhancedMode
+if enhancedMode and signalAllowed
+    tfStatus := tfNameCN + "｜v1.9旁路实验"
+    tfEvidence := "v1.9质量/旁路｜未编译回放"
+
+if barstate.isfirst
+    if armLevel <= 0 or extreme <= armLevel or extreme >= 50
+        runtime.error("核心阈值须满足：0 < Episode线 < Extreme线 < 50。")
+    if minLegBars > maxLegBars
+        runtime.error("背离最小间隔不能大于最大间隔。")
+    if na(timeframe.in_seconds())
+        runtime.error("多周期快照需要基于时间的图表周期。")
+
+string divergenceConfig = str.tostring(minLegBars) + "/" + str.tostring(maxLegBars) + "/" + str.tostring(useStrengthFilter) + "/" + str.tostring(minOscDelta) + "/" + str.tostring(minPriceAtr) + "/" + str.tostring(atrLen) + "/" + str.tostring(stopAtrMult)
+string qualityConfig = str.tostring(enableExtremeQuality) + "/" + str.tostring(extremeHoldBars) + "/" + str.tostring(extremePenetration) + "/" + str.tostring(enableReversalQuality) + "/" + str.tostring(minConsecutiveIn) + "/" + str.tostring(minD3Retreat) + "/" + str.tostring(enableDivRecovery) + "/" + str.tostring(divMaxWait) + "/" + str.tostring(divRecoveryAtr) + "/" + str.tostring(divRequireDirectionClose)
+
+// ============================================================================
+// 03 — 视觉精简
+// ============================================================================
+bool showWave = input.bool(true, "显示 D3 主波段线", group="03｜视觉精简")
+bool showBands = input.bool(true, "显示 ±25 / ±40 / 0 参考线", group="03｜视觉精简")
+bool showExtremeColumns = input.bool(false, "显示 Extreme 柱（默认关闭）", group="03｜视觉精简",
+     tooltip="关闭可明显减少视觉杂乱；不影响任何信号。")
+bool showStateDots = input.bool(false, "显示超买/超卖状态点阵（默认关闭）", group="03｜视觉精简",
+     tooltip="仅视觉状态点，不是交易信号。")
+bool showEventLabels = input.bool(true, "显示超买超卖事件标签", group="03｜视觉精简")
+bool compactLabels = input.bool(true, "历史标签精简显示（悬停查看原始事件和时间）", group="03｜视觉精简", tooltip="默认仅缩短历史事件的图上文字，避免相邻普通/稳定/反转标签相互遮挡；具体周期、原始事件名称和确认时间保存在悬停提示。关闭恢复详细中文标签。只影响显示，不影响事件和告警。")
+string labelDensity = input.string("全部事件", "标签密度", options=["只显示背离", "重要事件", "全部事件"], group="03｜视觉精简", tooltip="默认显示普通、稳定、反转超买超卖；同一根K同方向优先显示反转>稳定>普通。正式背离标签独立显示；这些都是收盘后事件，不代表交易指令。")
+string displayMode = input.string("精简", "面板信息密度", options=["精简", "详细"], group="03｜视觉精简", tooltip="精简：重点显示D3、OUT/IN、背离与五周期快照；详细：保留研究字段。仅影响界面。")
+bool showDivergenceLabels = input.bool(true, "显示最终确认背离标签", group="03｜视觉精简")
+bool showRawDivergenceLabels = input.bool(true, "显示原始严格背离（未过价格过滤）", group="03｜视觉精简", tooltip="离开±40且满足原版严格背离及失效位检查时标记『原始背离｜待价格确认』；若增强价格过滤同时通过，只绘最终确认，避免重复。这不是已确认交易信号。")
+bool showDivergenceLines = input.bool(true, "显示确认背离连线", group="03｜视觉精简")
+bool showCandidate = input.bool(true, "显示潜在背离候选（默认开启）", group="03｜视觉精简",
+     tooltip="仅当严格背离候选的价格、D3、间隔与强度条件全满足，且收盘后首次出现时才绘制一次。候选不等于正式背离，更不是下单信号。")
+bool showDashboard = input.bool(true, "显示当前状态面板", group="03｜视觉精简")
+bool showPeakLock = input.bool(false, "显示峰谷锁定线（默认关闭）", group="03｜视觉精简")
+bool showCurrentBadge = input.bool(false, "显示最新K中文状态徽章", group="03｜视觉精简",
+     tooltip="无论当前有没有新事件，都在最新 K 附近显示：周期、普通/反转状态、OUT/IN、D3。")
+bool labelShowTimeframe = input.bool(true, "历史标签显示中文周期", group="03｜视觉精简",
+     tooltip="例如：30分钟｜普通超买、日线｜反转超卖。")
+bool confirmedEventsOnly = input.bool(true, "仅已收盘事件（v1.9强制）", group="03｜视觉精简",
+     tooltip="兼容旧版配置。v1.9中正式事件无论该选项如何均只在已收盘K确认；该开关不能关闭防重绘要求。")
+bool showMTFMatrix = input.bool(true, "显示多周期状态矩阵", group="03｜视觉精简",
+     tooltip="同时显示30分钟、1小时、4小时、日线、周线。原文件中的历史验证记录不代表新版质量过滤通过验证；请先在TradingView编译回放。")
+bool mtfUseClosedBars = input.bool(true, "MTF矩阵只使用各周期已收盘K", group="03｜视觉精简",
+     tooltip="开启：高周期在下一周期开始后取得上一根确认K；同周期收盘时取本K，否则取前K；低周期取最近已结束的子K。共振告警随后等当前图表K收盘检查。例如30分钟图上的新4小时状态，通常到下一根30分钟K收盘才告警。关闭为形成中预览，共振告警暂停。低周期历史范围受TradingView套餐限制。")
+// 实验旁路配置指纹（用于告警去重，不参与交易引擎的数值计算）。
+string researchConfig = str.tostring(enablePivotCompare) + "/" + str.tostring(pvLeft) + "/" + str.tostring(pvRight) + "/" + str.tostring(pvOffsetMax) + "/" + str.tostring(pvRequireExtreme) + "/" + str.tostring(enablePercentileTag) + "/" + str.tostring(percentileBars) + "/" + str.tostring(enableTrendContext) + "/" + str.tostring(emaTrendLen) + "/" + str.tostring(adxPeriod) + "/" + str.tostring(adxSmooth) + "/" + str.tostring(strongAdx) + "/" + str.tostring(enableFailureSwing) + "/" + str.tostring(fsMaxBars) + "/" + str.tostring(fsPullback) + "/" + str.tostring(mtfUseClosedBars)
+
+int panelTransp = input.int(18, "面板背景透明度（越小越深）", minval=0, maxval=90, group="03｜视觉精简",
+     tooltip="默认18。之前过于透明会导致看不清，现在可自行调深浅。")
+bool zebraRows = input.bool(true, "表格启用斑马纹行底色", group="03｜视觉精简",
+     tooltip="开启后多周期状态矩阵每行有轻微底色，阅读更清楚。")
+
+// ============================================================================
+// 04 — 告警
+// ============================================================================
+bool enableJsonAlert = input.bool(true, "启用动态 JSON alert()", group="04｜告警",
+     tooltip="创建 TradingView 警报时选择“Any alert() function call”，可用于 App、Email 或 Webhook。")
+bool alertFilterEvents = input.bool(true, "动态告警：普通/反转事件", group="04｜告警")
+bool alertTradeSignals = input.bool(true, "动态告警：超买/超卖 + 背离正式信号", group="04｜告警")
+bool alertMTFResonance = input.bool(true, "动态告警：多周期反转共振", group="04｜告警",
+     tooltip="仅在当前图表收盘时检查已收盘快照的结构变化。高周期确认数据在下一周期开始后更新，因此相关告警通常延后到下一根图表K收盘；休市或缺少行情更新时可能更晚。不证明事件先后，也不捕捉图表K内部曾出现后又消失的共振；预览模式暂停共振告警。")
+
+// ============================================================================
+// 05 — 核心振荡器
+// ============================================================================
+float src = (low + close) / 2.0
+float chg = ta.change(src)
+float gain = math.max(chg, 0.0)
+float loss = math.max(-chg, 0.0)
+
+float avgGain = ta.rma(gain, rsiLen)
+float avgLoss = ta.rma(loss, rsiLen)
+
+float rsi = na
+if avgLoss == 0.0
+    rsi := 100.0
+else if avgGain == 0.0
+    rsi := 0.0
+else
+    rsi := 100.0 - 100.0 / (1.0 + avgGain / avgLoss)
+
+float rsiLow = ta.lowest(rsi, stochLen)
+float rsiHigh = ta.highest(rsi, stochLen)
+
+bool stochValid = not na(rsi) and not na(rsiLow) and not na(rsiHigh) and rsiHigh > rsiLow
+float centeredStoch = na
+if stochValid
+    centeredStoch := (rsi - rsiLow) / (rsiHigh - rsiLow) * 100.0 - 50.0
+
+// ta.sma 会跳过 na；连续计数确保恢复窗口不混入中断前的值。
+var int validStochBars = 0
+validStochBars := stochValid ? validStochBars + 1 : 0
+float k = ta.sma(centeredStoch, kLen)
+float d3Raw = ta.sma(k, dLen)
+bool coreReady = stochValid and validStochBars >= kLen + dLen - 1 and not na(d3Raw)
+float d3 = coreReady ? d3Raw : na
+float deltaD3 = d3 - d3[1]
+string coreDataStatus = not stochValid ? (na(rsi) ? "数据预热中" : "RSI区间无波动｜信号暂停") : "平滑恢复中｜信号暂停"
+
+// ============================================================================
+// 05A — v1.9 历史分位数与趋势旁路：当前K不参与历史分位估算
+// 计算本身允许形成中显示，正式事件仍仅收盘确认。
+// ============================================================================
+float validD3History = ta.sma(coreReady ? 1.0 : 0.0, percentileBars)[1]
+bool percentileReady = enablePercentileTag and not na(validD3History) and validD3History >= 0.999 and coreReady
+float d3P05 = ta.percentile_nearest_rank(d3[1], percentileBars, 5)
+float d3P95 = ta.percentile_nearest_rank(d3[1], percentileBars, 95)
+bool historicallyExtremeOB = percentileReady and not na(d3P95) and d3 > d3P95 and d3 >= extreme
+bool historicallyExtremeOS = percentileReady and not na(d3P05) and d3 < d3P05 and d3 <= -extreme
+string relativeExtremeText = not enablePercentileTag ? "分位数关闭" : not percentileReady ? "分位数预热/缺样本" : historicallyExtremeOB ? "超买+历史罕见" : historicallyExtremeOS ? "超卖+历史罕见" : (d3 >= extreme or d3 <= -extreme) ? "固定极端，未越分位线" : "非固定极端"
+
+float emaTrend = ta.ema(close, emaTrendLen)
+[plusDI, minusDI, trendADX] = ta.dmi(adxPeriod, adxSmooth)
+bool trendReady = enableTrendContext and not na(emaTrend) and not na(trendADX) and not na(plusDI) and not na(minusDI) and bar_index >= emaTrendLen
+bool strongUptrend = trendReady and trendADX >= strongAdx and close > emaTrend and plusDI > minusDI
+bool strongDowntrend = trendReady and trendADX >= strongAdx and close < emaTrend and minusDI > plusDI
+string trendText = not enableTrendContext ? "趋势过滤关闭" : not trendReady ? "趋势数据不足" : strongUptrend ? "强上涨｜逆势做空谨慎" : strongDowntrend ? "强下跌｜逆势做多谨慎" : trendADX < strongAdx ? "弱趋势/震荡" : "趋势条件不一致"
+
+// ============================================================================
+// 05B — 多周期快照（同一套 FINAL 核心）
+// ----------------------------------------------------------------------------
+// 只用于多周期状态矩阵；不改变当前图表周期的正式事件逻辑。
+// 返回：D3、归一化Phase、状态码。
+// 状态码：
+//   0 中性
+//   1 普通超买
+//  -1 普通超卖
+//   2 反转超买
+//  -2 反转超卖
+//   3 超买侧待确认
+//  -3 超卖侧待确认
+// ============================================================================
+f_mtfSnapshot(bool previous) =>
+    float src_ = (low + close) / 2.0
+    float chg_ = ta.change(src_)
+    float gain_ = math.max(chg_, 0.0)
+    float loss_ = math.max(-chg_, 0.0)
+
+    float avgGain_ = ta.rma(gain_, rsiLen)
+    float avgLoss_ = ta.rma(loss_, rsiLen)
+
+    float rsi_ = na
+    if avgLoss_ == 0.0
+        rsi_ := 100.0
+    else if avgGain_ == 0.0
+        rsi_ := 0.0
+    else
+        rsi_ := 100.0 - 100.0 / (1.0 + avgGain_ / avgLoss_)
+
+    float rsiLow_ = ta.lowest(rsi_, stochLen)
+    float rsiHigh_ = ta.highest(rsi_, stochLen)
+
+    bool stochValid_ = not na(rsi_) and not na(rsiLow_) and not na(rsiHigh_) and rsiHigh_ > rsiLow_
+    float centeredStoch_ = na
+    if stochValid_
+        centeredStoch_ := (rsi_ - rsiLow_) / (rsiHigh_ - rsiLow_) * 100.0 - 50.0
+
+    var int validStochBars_ = 0
+    validStochBars_ := stochValid_ ? validStochBars_ + 1 : 0
+    float k_ = ta.sma(centeredStoch_, kLen)
+    float d3Raw_ = ta.sma(k_, dLen)
+    bool coreReady_ = stochValid_ and validStochBars_ >= kLen + dLen - 1 and not na(d3Raw_)
+    float d3_ = coreReady_ ? d3Raw_ : na
+    float deltaD3_ = d3_ - d3_[1]
+
+    int side_ = d3_ > 0 ? 1 : d3_ < 0 ? -1 : 0
+    float normD3_ = math.abs(d3_)
+    float normPhase_ = side_ == 0 ? 0.0 : side_ * deltaD3_
+
+    bool armed_ = normD3_ >= armLevel
+    bool out_ = armed_ and normPhase_ > 0
+    bool in_ = armed_ and normPhase_ < 0
+    bool ob_ = d3_ >= extreme
+    bool os_ = d3_ <= -extreme
+
+    var int episodeSide_ = 0
+    var bool ordinarySeen_ = false
+    var bool ordinaryFired_ = false
+    var bool reversalFired_ = false
+    var float obEpisodePeak_ = na
+    var float osEpisodeTrough_ = na
+    var int obInStreak_ = 0
+    var int osInStreak_ = 0
+
+    bool sideFlip_ = episodeSide_ != 0 and side_ != 0 and side_ != episodeSide_
+    bool reset_ = coreReady_ and episodeSide_ != 0 and (not armed_ or sideFlip_)
+
+    // v1.9.4: 来源周期 D3 失效时丢弃整段 Episode，防止恢复后继承旧波段锁存。
+    // 此分支仅影响无效/中断的来源K；正常连续有效K计算不变。
+    if not coreReady_
+        episodeSide_ := 0
+        ordinarySeen_ := false
+        ordinaryFired_ := false
+        reversalFired_ := false
+        obEpisodePeak_ := na
+        osEpisodeTrough_ := na
+        obInStreak_ := 0
+        osInStreak_ := 0
+
+    if reset_
+        episodeSide_ := 0
+        ordinarySeen_ := false
+        ordinaryFired_ := false
+        reversalFired_ := false
+        obEpisodePeak_ := na
+        osEpisodeTrough_ := na
+        obInStreak_ := 0
+        osInStreak_ := 0
+
+    if episodeSide_ == 0 and armed_ and side_ != 0
+        episodeSide_ := side_
+        ordinarySeen_ := false
+        ordinaryFired_ := false
+        reversalFired_ := false
+        obEpisodePeak_ := na
+        osEpisodeTrough_ := na
+        obInStreak_ := 0
+        osInStreak_ := 0
+
+    if episodeSide_ != 0 and side_ == episodeSide_ and out_
+        ordinarySeen_ := true
+
+    bool hadOrd_ = ordinaryFired_
+    bool ordOB_ = coreReady_ and coreReady_[1] and episodeSide_ == 1 and ordinarySeen_ and not ordinaryFired_ and ob_ and not ob_[1]
+    bool ordOS_ = coreReady_ and coreReady_[1] and episodeSide_ == -1 and ordinarySeen_ and not ordinaryFired_ and os_ and not os_[1]
+
+    if ordOB_ or ordOS_
+        ordinaryFired_ := true
+
+    // 基于本来源周期已积累的 Extreme 峰谷；防止单K小幅 IN 触发“反转”。
+    // D3数据中断时清除增强过滤器的连续性，不能沿用缺口前的峰值。
+    if not coreReady_
+        obEpisodePeak_ := na
+        osEpisodeTrough_ := na
+        obInStreak_ := 0
+        osInStreak_ := 0
+    if coreReady_ and ob_ and episodeSide_ == 1 and ordinaryFired_
+        obEpisodePeak_ := na(obEpisodePeak_) ? d3_ : math.max(obEpisodePeak_, d3_)
+        obInStreak_ := in_ ? obInStreak_ + 1 : 0
+    else
+        obInStreak_ := 0
+    if coreReady_ and os_ and episodeSide_ == -1 and ordinaryFired_
+        osEpisodeTrough_ := na(osEpisodeTrough_) ? d3_ : math.min(osEpisodeTrough_, d3_)
+        osInStreak_ := in_ ? osInStreak_ + 1 : 0
+    else
+        osInStreak_ := 0
+    bool obQuality_ = not enableReversalQuality or (obInStreak_ >= minConsecutiveIn and not na(obEpisodePeak_) and obEpisodePeak_ - d3_ >= minD3Retreat)
+    bool osQuality_ = not enableReversalQuality or (osInStreak_ >= minConsecutiveIn and not na(osEpisodeTrough_) and d3_ - osEpisodeTrough_ >= minD3Retreat)
+    bool revOB_ = coreReady_ and coreReady_[1] and episodeSide_ == 1 and hadOrd_ and not reversalFired_ and ob_ and in_ and obQuality_
+    bool revOS_ = coreReady_ and coreReady_[1] and episodeSide_ == -1 and hadOrd_ and not reversalFired_ and os_ and in_ and osQuality_
+
+    if revOB_ or revOS_
+        reversalFired_ := true
+
+    int state_ = 0
+    if episodeSide_ == 1
+        if reversalFired_
+            state_ := 2
+        else if ordinaryFired_
+            state_ := 1
+        else
+            state_ := 3
+    else if episodeSide_ == -1
+        if reversalFired_
+            state_ := -2
+        else if ordinaryFired_
+            state_ := -1
+        else
+            state_ := -3
+
+    bool ready_ = coreReady_
+    float d3Ret_ = previous ? (ready_[1] ? d3_[1] : na) : (ready_ ? d3_ : na)
+    float phaseRet_ = previous ? (ready_[1] ? normPhase_[1] : na) : (ready_ ? normPhase_ : na)
+    int stateRet_ = previous ? (ready_[1] ? state_[1] : na) : (ready_ ? state_ : na)
+    int closeRet_ = previous ? time_close[1] : time_close
+
+    [d3Ret_, phaseRet_, stateRet_, closeRet_]
+
+// 每个调用保存自己的最新已收盘子K；普通 var 遵循实时 rollback，不使用 varip。
+f_mtfData(simple string requestedTF) =>
+    float dRet = na
+    float pRet = na
+    int sRet = na
+    int tRet = na
+    var float lastD = na
+    var float lastP = na
+    var int lastS = na
+    var int lastT = na
+    float requestedSeconds = timeframe.in_seconds(requestedTF)
+    float chartSeconds = timeframe.in_seconds()
+    if not mtfUseClosedBars
+        [dRaw, pRaw, sRaw, tRaw] = request.security(syminfo.tickerid, requestedTF, f_mtfSnapshot(false), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+        dRet := dRaw
+        pRet := pRaw
+        sRet := sRaw
+        tRet := tRaw
+    else if requestedSeconds > chartSeconds
+        // 仅高周期使用偏移一根 + lookahead_on，避免未来数据泄漏。
+        [dHTF, pHTF, sHTF, tHTF] = request.security(syminfo.tickerid, requestedTF, f_mtfSnapshot(true), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+        dRet := dHTF
+        pRet := pHTF
+        sRet := sHTF
+        tRet := tHTF
+    else if requestedSeconds == chartSeconds
+        [dSame, pSame, sSame, tSame] = f_mtfSnapshot(false)
+        dRet := barstate.isconfirmed ? dSame : dSame[1]
+        pRet := barstate.isconfirmed ? pSame : pSame[1]
+        sRet := barstate.isconfirmed ? sSame : sSame[1]
+        tRet := barstate.isconfirmed ? tSame : tSame[1]
+    else
+        [dArray, pArray, sArray, tArray] = request.security_lower_tf(syminfo.tickerid, requestedTF, f_mtfSnapshot(false))
+        int cutoff = barstate.isrealtime ? timenow : time_close
+        int n = array.size(tArray)
+        if n > 0
+            for i = n - 1 to 0
+                int childClose = array.get(tArray, i)
+                if not na(childClose) and childClose <= cutoff
+                    lastD := array.get(dArray, i)
+                    lastP := array.get(pArray, i)
+                    lastS := array.get(sArray, i)
+                    lastT := childClose
+                    break
+        dRet := lastD
+        pRet := lastP
+        sRet := lastS
+        tRet := lastT
+    [dRet, pRet, sRet, tRet]
+
+[mtf30D3, mtf30Phase, mtf30State, mtf30Close] = f_mtfData("30")
+[mtf1HD3, mtf1HPhase, mtf1HState, mtf1HClose] = f_mtfData("60")
+[mtf4HD3, mtf4HPhase, mtf4HState, mtf4HClose] = f_mtfData("240")
+[mtf1DD3, mtf1DPhase, mtf1DState, mtf1DClose] = f_mtfData("D")
+[mtf1WD3, mtf1WPhase, mtf1WState, mtf1WClose] = f_mtfData("W")
+
+// ============================================================================
+// 05C — 多周期共振解释层
+// ----------------------------------------------------------------------------
+// 只解释多周期结构，不改变 Eric FINAL 核心事件，也不直接生成交易。
+// +状态 = 超买侧；-状态 = 超卖侧；±2 = 已进入反转状态。
+// ============================================================================
+int obSideCount = (mtf30State > 0 ? 1 : 0) + (mtf1HState > 0 ? 1 : 0) + (mtf4HState > 0 ? 1 : 0) + (mtf1DState > 0 ? 1 : 0) + (mtf1WState > 0 ? 1 : 0)
+int osSideCount = (mtf30State < 0 ? 1 : 0) + (mtf1HState < 0 ? 1 : 0) + (mtf4HState < 0 ? 1 : 0) + (mtf1DState < 0 ? 1 : 0) + (mtf1WState < 0 ? 1 : 0)
+
+int obReversalCount = (mtf30State == 2 ? 1 : 0) + (mtf1HState == 2 ? 1 : 0) + (mtf4HState == 2 ? 1 : 0) + (mtf1DState == 2 ? 1 : 0) + (mtf1WState == 2 ? 1 : 0)
+int osReversalCount = (mtf30State == -2 ? 1 : 0) + (mtf1HState == -2 ? 1 : 0) + (mtf4HState == -2 ? 1 : 0) + (mtf1DState == -2 ? 1 : 0) + (mtf1WState == -2 ? 1 : 0)
+
+bool lowBearRevAny = mtf30State == 2 or mtf1HState == 2
+bool lowBullRevAny = mtf30State == -2 or mtf1HState == -2
+bool lowBearRevBoth = mtf30State == 2 and mtf1HState == 2
+bool lowBullRevBoth = mtf30State == -2 and mtf1HState == -2
+
+bool fourBearRev = mtf4HState == 2
+bool fourBullRev = mtf4HState == -2
+bool fourOrdOB = mtf4HState == 1
+bool fourOrdOS = mtf4HState == -1
+
+bool mtfBearReversalSync = fourBearRev and lowBearRevAny
+bool mtfBullReversalSync = fourBullRev and lowBullRevAny
+bool mtfBearLowerLead = lowBearRevBoth and (fourOrdOB or mtf4HState == 3)
+bool mtfBullLowerLead = lowBullRevBoth and (fourOrdOS or mtf4HState == -3)
+
+// 数据由无效恢复为有效不代表新的共振；参与周期须有连续有效快照。
+// v1.9.1: 跨周期同向快照必须同时“足够新鲜”。休市/停盘不应反复把旧4H状态当新共振。
+// 这是保守的“告警资格”过滤，不影响原本显示的历史状态，也不增加买卖信号。
+// 各周期时间戳均由来源已收盘K获得；与当前图表K收盘时间比较，不与计算机本地时钟比。
+int mtfCutoff = time_close
+bool mtf30Fresh = not na(mtf30Close) and mtfCutoff >= mtf30Close and mtfCutoff - mtf30Close <= 2 * 30 * 60 * 1000
+bool mtf1HFresh = not na(mtf1HClose) and mtfCutoff >= mtf1HClose and mtfCutoff - mtf1HClose <= 2 * 60 * 60 * 1000
+bool mtf4HFresh = not na(mtf4HClose) and mtfCutoff >= mtf4HClose and mtfCutoff - mtf4HClose <= 2 * 240 * 60 * 1000
+bool mtfSignalReady = standardChart and mtf30Fresh and mtf1HFresh and mtf4HFresh and not na(mtf30State) and not na(mtf1HState) and not na(mtf4HState) and not na(mtf30State[1]) and not na(mtf1HState[1]) and not na(mtf4HState[1])
+bool mtfBearReversalSyncNew = mtfSignalReady and mtfSignalReady[1] and mtfUseClosedBars and barstate.isconfirmed and mtfBearReversalSync and not mtfBearReversalSync[1]
+bool mtfBullReversalSyncNew = mtfSignalReady and mtfSignalReady[1] and mtfUseClosedBars and barstate.isconfirmed and mtfBullReversalSync and not mtfBullReversalSync[1]
+bool mtfBearLowerLeadNew = mtfSignalReady and mtfSignalReady[1] and mtfUseClosedBars and barstate.isconfirmed and mtfBearLowerLead and not mtfBearLowerLead[1]
+bool mtfBullLowerLeadNew = mtfSignalReady and mtfSignalReady[1] and mtfUseClosedBars and barstate.isconfirmed and mtfBullLowerLead and not mtfBullLowerLead[1]
+
+string mtfResonanceText = "暂无明确共振"
+string mtfStructureText = "各周期独立观察"
+
+if mtfBearReversalSync
+    mtfResonanceText := "4小时反转超买 + 低周期同向"
+    mtfStructureText := "当前已收盘快照同向；不判定事件先后"
+else if mtfBullReversalSync
+    mtfResonanceText := "4小时反转超卖 + 低周期同向"
+    mtfStructureText := "当前已收盘快照同向；不判定事件先后"
+else if mtfBearLowerLead
+    mtfResonanceText := "30分钟+1小时反转超买｜4小时尚未反转"
+    mtfStructureText := "低周期当前已反转；4小时当前尚未反转"
+else if mtfBullLowerLead
+    mtfResonanceText := "30分钟+1小时反转超卖｜4小时尚未反转"
+    mtfStructureText := "低周期当前已反转；4小时当前尚未反转"
+else if obSideCount >= 3 and osSideCount == 0
+    mtfResonanceText := "多周期同处超买侧"
+    mtfStructureText := obReversalCount > 0 ? "已有局部反转，但尚未形成4小时共振" : "同侧扩张，不等于反转信号"
+else if osSideCount >= 3 and obSideCount == 0
+    mtfResonanceText := "多周期同处超卖侧"
+    mtfStructureText := osReversalCount > 0 ? "已有局部反转，但尚未形成4小时共振" : "同侧扩张，不等于反转信号"
+else if obSideCount > 0 and osSideCount > 0
+    mtfResonanceText := "周期分歧"
+    mtfStructureText := "不同周期位于相反侧，暂不属于同向共振"
+
+bool mtfAllAvailable = not na(mtf30State) and not na(mtf1HState) and not na(mtf4HState) and not na(mtf1DState) and not na(mtf1WState)
+if not mtfAllAvailable
+    mtfStructureText += "｜部分周期无有效快照"
+if not mtfUseClosedBars
+    mtfStructureText += "｜形成中预览，共振告警暂停"
+if mtfUseClosedBars and not (mtf30Fresh and mtf1HFresh and mtf4HFresh)
+    mtfStructureText += "｜30m/1H/4H源K可能过期，共振告警暂停"
+
+// ============================================================================
+// 06 — Phase-FSM
+// ============================================================================
+int sideNow = d3 > 0 ? 1 : d3 < 0 ? -1 : 0
+float normD3 = math.abs(d3)
+float normPhase = sideNow == 0 ? 0.0 : sideNow * deltaD3
+
+bool armedNow = normD3 >= armLevel
+bool phaseOut = armedNow and normPhase > 0
+bool phaseIn = armedNow and normPhase < 0
+
+bool ob = d3 >= extreme
+bool os = d3 <= -extreme
+bool eventBarOK = coreReady and coreReady[1] and barstate.isconfirmed
+
+var int episodeSide = 0
+var bool ordinaryStateSeen = false
+var bool ordinaryLabelFired = false
+var bool reversalLabelFired = false
+var bool stableOBFired = false
+var bool stableOSFired = false
+var int obExtremeBars = 0
+var int osExtremeBars = 0
+var float obEpisodePeak = na
+var float osEpisodeTrough = na
+var int obInStreak = 0
+var int osInStreak = 0
+
+bool sideFlip = episodeSide != 0 and sideNow != 0 and sideNow != episodeSide
+bool resetEpisode = coreReady and episodeSide != 0 and (not armedNow or sideFlip)
+
+// v1.9.4: D3 数据不连续时，清除当前周期 Episode 的全部锁存状态。
+// 恢复K仅作预热，后续全新有效波段才允许触发普通/反转事件。
+if barstate.isconfirmed and not coreReady
+    episodeSide := 0
+    ordinaryStateSeen := false
+    ordinaryLabelFired := false
+    reversalLabelFired := false
+    stableOBFired := false
+    stableOSFired := false
+    obExtremeBars := 0
+    osExtremeBars := 0
+    obEpisodePeak := na
+    osEpisodeTrough := na
+    obInStreak := 0
+    osInStreak := 0
+
+if barstate.isconfirmed and resetEpisode
+    episodeSide := 0
+    ordinaryStateSeen := false
+    ordinaryLabelFired := false
+    reversalLabelFired := false
+    stableOBFired := false
+    stableOSFired := false
+    obExtremeBars := 0
+    osExtremeBars := 0
+    obEpisodePeak := na
+    osEpisodeTrough := na
+    obInStreak := 0
+    osInStreak := 0
+
+if barstate.isconfirmed and episodeSide == 0 and armedNow and sideNow != 0
+    episodeSide := sideNow
+    ordinaryStateSeen := false
+    ordinaryLabelFired := false
+    reversalLabelFired := false
+    stableOBFired := false
+    stableOSFired := false
+    obExtremeBars := 0
+    osExtremeBars := 0
+    obEpisodePeak := na
+    osEpisodeTrough := na
+    obInStreak := 0
+    osInStreak := 0
+
+if barstate.isconfirmed and episodeSide != 0 and sideNow == episodeSide and phaseOut
+    ordinaryStateSeen := true
+
+bool hadOrdinaryLabel = ordinaryLabelFired
+
+bool ordinaryOB = signalAllowed and eventBarOK and episodeSide == 1 and ordinaryStateSeen and not ordinaryLabelFired and ob and not ob[1]
+bool ordinaryOS = signalAllowed and eventBarOK and episodeSide == -1 and ordinaryStateSeen and not ordinaryLabelFired and os and not os[1]
+
+if barstate.isconfirmed and (ordinaryOB or ordinaryOS)
+    ordinaryLabelFired := true
+
+// 首次入Extreme仍作原版普通预警；多根极端K才升级为“稳定”提示。
+if barstate.isconfirmed
+    obExtremeBars := coreReady and ob ? obExtremeBars + 1 : 0
+    osExtremeBars := coreReady and os ? osExtremeBars + 1 : 0
+bool stableOB = enableExtremeQuality and signalAllowed and eventBarOK and hadOrdinaryLabel and episodeSide == 1 and not stableOBFired and obExtremeBars >= extremeHoldBars and d3 >= extreme + extremePenetration
+bool stableOS = enableExtremeQuality and signalAllowed and eventBarOK and hadOrdinaryLabel and episodeSide == -1 and not stableOSFired and osExtremeBars >= extremeHoldBars and d3 <= -extreme - extremePenetration
+if stableOB
+    stableOBFired := true
+if stableOS
+    stableOSFired := true
+
+// 同周期过滤口径与MTF一致。IN连续性与峰谷退幅只在确认K累积。
+if barstate.isconfirmed and not coreReady
+    obEpisodePeak := na
+    osEpisodeTrough := na
+    obInStreak := 0
+    osInStreak := 0
+if barstate.isconfirmed and coreReady and ob and episodeSide == 1 and ordinaryLabelFired
+    obEpisodePeak := na(obEpisodePeak) ? d3 : math.max(obEpisodePeak, d3)
+    obInStreak := phaseIn ? obInStreak + 1 : 0
+else if barstate.isconfirmed
+    obInStreak := 0
+if barstate.isconfirmed and coreReady and os and episodeSide == -1 and ordinaryLabelFired
+    osEpisodeTrough := na(osEpisodeTrough) ? d3 : math.min(osEpisodeTrough, d3)
+    osInStreak := phaseIn ? osInStreak + 1 : 0
+else if barstate.isconfirmed
+    osInStreak := 0
+bool reversalOBQuality = not enableReversalQuality or (obInStreak >= minConsecutiveIn and not na(obEpisodePeak) and obEpisodePeak - d3 >= minD3Retreat)
+bool reversalOSQuality = not enableReversalQuality or (osInStreak >= minConsecutiveIn and not na(osEpisodeTrough) and d3 - osEpisodeTrough >= minD3Retreat)
+bool reversalOB = signalAllowed and eventBarOK and episodeSide == 1 and hadOrdinaryLabel and not reversalLabelFired and ob and phaseIn and reversalOBQuality
+bool reversalOS = signalAllowed and eventBarOK and episodeSide == -1 and hadOrdinaryLabel and not reversalLabelFired and os and phaseIn and reversalOSQuality
+
+if barstate.isconfirmed and (reversalOB or reversalOS)
+    reversalLabelFired := true
+
+// ============================================================================
+// 07 — 当前状态文本
+// ============================================================================
+string zoneText = coreReady ? "中性" : coreDataStatus
+bool obStableNow = enableExtremeQuality and obExtremeBars >= extremeHoldBars and d3 >= extreme + extremePenetration
+bool osStableNow = enableExtremeQuality and osExtremeBars >= extremeHoldBars and d3 <= -extreme - extremePenetration
+if ob
+    zoneText := not enableExtremeQuality ? "超买 Extreme" : obStableNow ? "超买 Extreme｜稳定" : "超买 Extreme｜未稳定"
+else if os
+    zoneText := not enableExtremeQuality ? "超卖 Extreme" : osStableNow ? "超卖 Extreme｜稳定" : "超卖 Extreme｜未稳定"
+else if coreReady and episodeSide == 1
+    zoneText := "超买侧 Episode"
+else if coreReady and episodeSide == -1
+    zoneText := "超卖侧 Episode"
+
+string phaseText = not coreReady ? coreDataStatus : normPhase > 0 ? "OUT｜向极值扩张" : normPhase < 0 ? "IN｜向中心回转" : "FLAT｜走平"
+
+string classText = coreReady ? "中性" : coreDataStatus
+if coreReady and episodeSide == 1
+    if reversalLabelFired
+        classText := "本轮已触发反转超买"
+    else if ordinaryLabelFired
+        classText := "本轮已触发普通超买"
+    else
+        classText := "超买侧待确认"
+else if coreReady and episodeSide == -1
+    if reversalLabelFired
+        classText := "本轮已触发反转超卖"
+    else if ordinaryLabelFired
+        classText := "本轮已触发普通超卖"
+    else
+        classText := "超卖侧待确认"
+
+string eventText = ordinaryOB ? "普通超买" : ordinaryOS ? "普通超卖" : reversalOB ? "反转超买" : reversalOS ? "反转超卖" : stableOB ? "稳定超买" : stableOS ? "稳定超卖" : "无"
+
+f_cnLabel(string eventName) =>
+    labelShowTimeframe ? tfNameCN + "｜" + eventName : eventName
+
+var string lastEventText = "无"
+var int lastEventTime = na
+
+if ordinaryOB
+    lastEventText := "普通超买"
+    lastEventTime := time_close
+else if ordinaryOS
+    lastEventText := "普通超卖"
+    lastEventTime := time_close
+else if reversalOB
+    lastEventText := "反转超买"
+    lastEventTime := time_close
+else if reversalOS
+    lastEventText := "反转超卖"
+    lastEventTime := time_close
+else if stableOB
+    lastEventText := "稳定超买"
+    lastEventTime := time_close
+else if stableOS
+    lastEventText := "稳定超卖"
+    lastEventTime := time_close
+
+// ============================================================================
+// 08 — 严格背离引擎
+// ============================================================================
+// 规则与此前策略保持一致：
+//   底背离 = Price LL + D3 HL
+//   顶背离 = Price HH + D3 LH
+// 背离 Pivot 必须发生在 ±40 Extreme 内；正式确认在第一根离开 Extreme 的有效已收盘 K。
+// 数据中断不当作离开 Extreme；恢复时重新建立区间，禁止跨中断配对。
+float atrVal = ta.atr(atrLen)
+
+f_bullStrength(float curPrice, float prevPrice, float curOsc, float prevOsc, float curAtr) =>
+    float oscDelta = curOsc - prevOsc
+    float priceAtr = not na(curAtr) and curAtr > 0.0 ? (prevPrice - curPrice) / curAtr : 0.0
+    bool ok = not useStrengthFilter or (oscDelta >= minOscDelta and priceAtr >= minPriceAtr)
+    [ok, oscDelta, priceAtr]
+
+f_bearStrength(float curPrice, float prevPrice, float curOsc, float prevOsc, float curAtr) =>
+    float oscDelta = prevOsc - curOsc
+    float priceAtr = not na(curAtr) and curAtr > 0.0 ? (curPrice - prevPrice) / curAtr : 0.0
+    bool ok = not useStrengthFilter or (oscDelta >= minOscDelta and priceAtr >= minPriceAtr)
+    [ok, oscDelta, priceAtr]
+
+var bool osActive = false
+var float curTroughLow = na
+var float curTroughOsc = na
+var float curTroughAtr = na
+var int curTroughIdx = na
+var bool curTroughStopTouched = false
+var float prevTroughLow = na
+var float prevTroughOsc = na
+var int prevTroughIdx = na
+
+var bool obActive = false
+var float curPeakHigh = na
+var float curPeakOsc = na
+var float curPeakAtr = na
+var int curPeakIdx = na
+var bool curPeakStopTouched = false
+var float prevPeakHigh = na
+var float prevPeakOsc = na
+var int prevPeakIdx = na
+
+var bool divergenceDataGap = false
+var bool bullCandidate = false
+var bool bearCandidate = false
+bool bullDivConfirmed = false
+bool bearDivConfirmed = false
+// 仅供可视化：原版严格背离在离开 Extreme 的本根已收盘K形成。
+// 与增强价格确认分离，不能冒充已通过二次过滤的最终确认。
+bool rawBullDivAtExit = false
+bool rawBearDivAtExit = false
+bool bullDivRejected = false
+bool bearDivRejected = false
+
+float bullSignalPivot = na
+float bullSignalStop = na
+float bullSignalOsc = na
+float bullSignalOscDelta = na
+float bullSignalPriceAtr = na
+
+float bearSignalPivot = na
+float bearSignalStop = na
+float bearSignalOsc = na
+float bearSignalOscDelta = na
+float bearSignalPriceAtr = na
+
+// 价格确认待处理池：仅保存最近一次有效raw背离；在已收盘K进行确认或废弃。
+var bool waitBull = false
+var float waitBullPivot = na
+var float waitBullStop = na
+var float waitBullOsc = na
+var float waitBullOscDelta = na
+var float waitBullPriceAtr = na
+var float waitBullATR = na
+var int waitBullBar = na
+var int waitBullPrevPivotIdx = na
+var float waitBullPrevOsc = na
+var int waitBullCurPivotIdx = na
+
+var bool waitBear = false
+var float waitBearPivot = na
+var float waitBearStop = na
+var float waitBearOsc = na
+var float waitBearOscDelta = na
+var float waitBearPriceAtr = na
+var float waitBearATR = na
+var int waitBearBar = na
+var int waitBearPrevPivotIdx = na
+var float waitBearPrevOsc = na
+var int waitBearCurPivotIdx = na
+bool bullRecoveryCancelled = false
+bool bearRecoveryCancelled = false
+
+// 无效数据期间仍以真实价格检查已记录的失效位，不更新振荡器 Pivot。
+if barstate.isconfirmed and enableDivergence and not coreReady
+    divergenceDataGap := true
+    bullCandidate := false
+    bearCandidate := false
+    if waitBull and low <= waitBullStop
+        waitBull := false
+        bullRecoveryCancelled := true
+    if waitBear and high >= waitBearStop
+        waitBear := false
+        bearRecoveryCancelled := true
+    if osActive and not na(curTroughLow) and not na(curTroughAtr) and low <= curTroughLow - stopAtrMult * curTroughAtr
+        curTroughStopTouched := true
+    if obActive and not na(curPeakHigh) and not na(curPeakAtr) and high >= curPeakHigh + stopAtrMult * curPeakAtr
+        curPeakStopTouched := true
+
+if barstate.isconfirmed and enableDivergence and coreReady
+    if divergenceDataGap
+        // 不允许跨数据中断把旧背离当新信号。
+        waitBull := false
+        waitBear := false
+        osActive := false
+        curTroughLow := na
+        curTroughOsc := na
+        curTroughAtr := na
+        curTroughIdx := na
+        curTroughStopTouched := false
+        prevTroughLow := na
+        prevTroughOsc := na
+        prevTroughIdx := na
+        obActive := false
+        curPeakHigh := na
+        curPeakOsc := na
+        curPeakAtr := na
+        curPeakIdx := na
+        curPeakStopTouched := false
+        prevPeakHigh := na
+        prevPeakOsc := na
+        prevPeakIdx := na
+        divergenceDataGap := false
+
+    bullCandidate := false
+    bearCandidate := false
+
+    if os
+        osActive := true
+
+        if na(curTroughLow) or low < curTroughLow
+            curTroughLow := low
+            curTroughOsc := d3
+            curTroughAtr := atrVal
+            curTroughIdx := bar_index
+            curTroughStopTouched := false
+        else if not na(curTroughAtr) and low <= curTroughLow - stopAtrMult * curTroughAtr
+            curTroughStopTouched := true
+
+        bool hasPrevLowCandidate = not na(prevTroughIdx) and not na(prevTroughLow) and not na(prevTroughOsc)
+        int lowCandidateDist = hasPrevLowCandidate and not na(curTroughIdx) ? curTroughIdx - prevTroughIdx : na
+        bool lowCandidateAdjacent = hasPrevLowCandidate and not na(lowCandidateDist) and lowCandidateDist >= minLegBars and lowCandidateDist <= maxLegBars
+        [lowCandidateStrength, lowCandidateOscDelta, lowCandidatePriceAtr] = f_bullStrength(curTroughLow, prevTroughLow, curTroughOsc, prevTroughOsc, curTroughAtr)
+        bullCandidate := lowCandidateAdjacent and not na(curTroughLow) and not na(curTroughOsc) and curTroughLow < prevTroughLow and curTroughOsc > prevTroughOsc and lowCandidateStrength
+
+    else if osActive
+        bool hasPrevLow = not na(prevTroughIdx) and not na(prevTroughLow) and not na(prevTroughOsc)
+        int lowDist = hasPrevLow and not na(curTroughIdx) ? curTroughIdx - prevTroughIdx : na
+        bool lowAdjacent = hasPrevLow and not na(lowDist) and lowDist >= minLegBars and lowDist <= maxLegBars
+        [lowStrengthOK, lowOscDelta, lowPriceAtr] = f_bullStrength(curTroughLow, prevTroughLow, curTroughOsc, prevTroughOsc, curTroughAtr)
+        bool bullDiv = lowAdjacent and not na(curTroughLow) and not na(curTroughOsc) and curTroughLow < prevTroughLow and curTroughOsc > prevTroughOsc and lowStrengthOK
+
+        float stopRef = not na(curTroughAtr) and curTroughAtr > 0 ? curTroughLow - stopAtrMult * curTroughAtr : na
+        bool stopValid = not na(stopRef) and not curTroughStopTouched and low > stopRef and close > stopRef
+        bullDivRejected := signalAllowed and bullDiv and not stopValid
+        if bullDiv and stopValid
+            rawBullDivAtExit := signalAllowed
+            if enableDivRecovery
+                waitBull := true
+                waitBullPivot := curTroughLow
+                waitBullStop := stopRef
+                waitBullOsc := curTroughOsc
+                waitBullOscDelta := lowOscDelta
+                waitBullPriceAtr := lowPriceAtr
+                waitBullATR := curTroughAtr
+                waitBullBar := bar_index
+                waitBullPrevPivotIdx := prevTroughIdx
+                waitBullPrevOsc := prevTroughOsc
+                waitBullCurPivotIdx := curTroughIdx
+            else
+                bullDivConfirmed := signalAllowed
+                bullSignalPivot := curTroughLow
+                bullSignalStop := stopRef
+                bullSignalOsc := curTroughOsc
+                bullSignalOscDelta := lowOscDelta
+                bullSignalPriceAtr := lowPriceAtr
+                if showDivergenceLines
+                    line.new(prevTroughIdx, prevTroughOsc, curTroughIdx, curTroughOsc, xloc=xloc.bar_index, extend=extend.none, color=color.new(#089981, 5), width=2)
+
+        if not na(curTroughIdx)
+            prevTroughLow := curTroughLow
+            prevTroughOsc := curTroughOsc
+            prevTroughIdx := curTroughIdx
+
+        curTroughLow := na
+        curTroughOsc := na
+        curTroughAtr := na
+        curTroughIdx := na
+        curTroughStopTouched := false
+        osActive := false
+
+    if ob
+        obActive := true
+
+        if na(curPeakHigh) or high > curPeakHigh
+            curPeakHigh := high
+            curPeakOsc := d3
+            curPeakAtr := atrVal
+            curPeakIdx := bar_index
+            curPeakStopTouched := false
+        else if not na(curPeakAtr) and high >= curPeakHigh + stopAtrMult * curPeakAtr
+            curPeakStopTouched := true
+
+        bool hasPrevHighCandidate = not na(prevPeakIdx) and not na(prevPeakHigh) and not na(prevPeakOsc)
+        int highCandidateDist = hasPrevHighCandidate and not na(curPeakIdx) ? curPeakIdx - prevPeakIdx : na
+        bool highCandidateAdjacent = hasPrevHighCandidate and not na(highCandidateDist) and highCandidateDist >= minLegBars and highCandidateDist <= maxLegBars
+        [highCandidateStrength, highCandidateOscDelta, highCandidatePriceAtr] = f_bearStrength(curPeakHigh, prevPeakHigh, curPeakOsc, prevPeakOsc, curPeakAtr)
+        bearCandidate := highCandidateAdjacent and not na(curPeakHigh) and not na(curPeakOsc) and curPeakHigh > prevPeakHigh and curPeakOsc < prevPeakOsc and highCandidateStrength
+
+    else if obActive
+        bool hasPrevHigh = not na(prevPeakIdx) and not na(prevPeakHigh) and not na(prevPeakOsc)
+        int highDist = hasPrevHigh and not na(curPeakIdx) ? curPeakIdx - prevPeakIdx : na
+        bool highAdjacent = hasPrevHigh and not na(highDist) and highDist >= minLegBars and highDist <= maxLegBars
+        [highStrengthOK, highOscDelta, highPriceAtr] = f_bearStrength(curPeakHigh, prevPeakHigh, curPeakOsc, prevPeakOsc, curPeakAtr)
+        bool bearDiv = highAdjacent and not na(curPeakHigh) and not na(curPeakOsc) and curPeakHigh > prevPeakHigh and curPeakOsc < prevPeakOsc and highStrengthOK
+
+        float stopRef = not na(curPeakAtr) and curPeakAtr > 0 ? curPeakHigh + stopAtrMult * curPeakAtr : na
+        bool stopValid = not na(stopRef) and not curPeakStopTouched and high < stopRef and close < stopRef
+        bearDivRejected := signalAllowed and bearDiv and not stopValid
+        if bearDiv and stopValid
+            rawBearDivAtExit := signalAllowed
+            if enableDivRecovery
+                waitBear := true
+                waitBearPivot := curPeakHigh
+                waitBearStop := stopRef
+                waitBearOsc := curPeakOsc
+                waitBearOscDelta := highOscDelta
+                waitBearPriceAtr := highPriceAtr
+                waitBearATR := curPeakAtr
+                waitBearBar := bar_index
+                waitBearPrevPivotIdx := prevPeakIdx
+                waitBearPrevOsc := prevPeakOsc
+                waitBearCurPivotIdx := curPeakIdx
+            else
+                bearDivConfirmed := signalAllowed
+                bearSignalPivot := curPeakHigh
+                bearSignalStop := stopRef
+                bearSignalOsc := curPeakOsc
+                bearSignalOscDelta := highOscDelta
+                bearSignalPriceAtr := highPriceAtr
+                if showDivergenceLines
+                    line.new(prevPeakIdx, prevPeakOsc, curPeakIdx, curPeakOsc, xloc=xloc.bar_index, extend=extend.none, color=color.new(#F23645, 5), width=2)
+
+        if not na(curPeakIdx)
+            prevPeakHigh := curPeakHigh
+            prevPeakOsc := curPeakOsc
+            prevPeakIdx := curPeakIdx
+
+        curPeakHigh := na
+        curPeakOsc := na
+        curPeakAtr := na
+        curPeakIdx := na
+        curPeakStopTouched := false
+        obActive := false
+
+// 待确认候选在该K收盘审核：入场前不能触碰失效位；超过等待窗口自动取消。
+// 在离开Extreme的原始确认K即可满足价格确认，否则只等待额外divMaxWait根。
+if barstate.isconfirmed and enableDivergence and coreReady and enableDivRecovery
+    if waitBull
+        bool cancelled = bar_index - waitBullBar > divMaxWait or low <= waitBullStop or d3 <= -extreme
+        bool directionOK = not divRequireDirectionClose or close > close[1]
+        bool priceOK = close >= waitBullPivot + divRecoveryAtr * waitBullATR and directionOK
+        if cancelled
+            waitBull := false
+            bullRecoveryCancelled := true
+        else if priceOK
+            bullDivConfirmed := signalAllowed
+            bullSignalPivot := waitBullPivot
+            bullSignalStop := waitBullStop
+            bullSignalOsc := waitBullOsc
+            bullSignalOscDelta := waitBullOscDelta
+            bullSignalPriceAtr := waitBullPriceAtr
+            if signalAllowed and showDivergenceLines
+                line.new(waitBullPrevPivotIdx, waitBullPrevOsc, waitBullCurPivotIdx, waitBullOsc, xloc=xloc.bar_index, extend=extend.none, color=color.new(#089981, 5), width=2)
+            waitBull := false
+    if waitBear
+        bool cancelled = bar_index - waitBearBar > divMaxWait or high >= waitBearStop or d3 >= extreme
+        bool directionOK = not divRequireDirectionClose or close < close[1]
+        bool priceOK = close <= waitBearPivot - divRecoveryAtr * waitBearATR and directionOK
+        if cancelled
+            waitBear := false
+            bearRecoveryCancelled := true
+        else if priceOK
+            bearDivConfirmed := signalAllowed
+            bearSignalPivot := waitBearPivot
+            bearSignalStop := waitBearStop
+            bearSignalOsc := waitBearOsc
+            bearSignalOscDelta := waitBearOscDelta
+            bearSignalPriceAtr := waitBearPriceAtr
+            if signalAllowed and showDivergenceLines
+                line.new(waitBearPrevPivotIdx, waitBearPrevOsc, waitBearCurPivotIdx, waitBearOsc, xloc=xloc.bar_index, extend=extend.none, color=color.new(#F23645, 5), width=2)
+            waitBear := false
+
+bool longSetup = bullDivConfirmed
+bool shortSetup = bearDivConfirmed
+// 方便区分“近期没有新确认”与“历史从未确认”；保留实际确认收盘时间。
+var string lastConfirmedDivName = "无"
+var int lastConfirmedDivTime = na
+if longSetup
+    lastConfirmedDivName := "底背离"
+    lastConfirmedDivTime := time_close
+else if shortSetup
+    lastConfirmedDivName := "顶背离"
+    lastConfirmedDivTime := time_close
+
+string divText = "无"
+if longSetup
+    divText := "底背离确认｜仅观察"
+else if shortSetup
+    divText := "顶背离确认｜仅观察"
+else if waitBull
+    divText := "底背离待价格确认"
+else if waitBear
+    divText := "顶背离待价格确认"
+else if bullCandidate
+    divText := "潜在底背离"
+else if bearCandidate
+    divText := "潜在顶背离"
+
+// ============================================================================
+// 08B — 独立确认 Pivot 背离（旁路对照，不改变原 Eric 信号）
+// 时间逻辑：Pivot值在起点已发生，但只有右侧pvRight根K收完才首次可知。
+// 价格和D3独立确认，二者起点相距<=pvOffsetMax才形成一对；每对只能消费一次。
+// 比较相邻两个已配对的事件，不跨不可用D3缺口；确认信号画在本K而非历史Pivot。
+// ============================================================================
+float pvPriceLo = ta.pivotlow(low, pvLeft, pvRight)
+float pvPriceHi = ta.pivothigh(high, pvLeft, pvRight)
+float pvOscLo = ta.pivotlow(d3, pvLeft, pvRight)
+float pvOscHi = ta.pivothigh(d3, pvLeft, pvRight)
+
+var int pvLowPriceIdx = na
+var int pvLowPriceTime = na
+var float pvLowPrice = na
+var float pvLowPriceATR = na
+var int pvLowOscIdx = na
+var float pvLowOsc = na
+var int pvHighPriceIdx = na
+var int pvHighPriceTime = na
+var float pvHighPrice = na
+var float pvHighPriceATR = na
+var int pvHighOscIdx = na
+var float pvHighOsc = na
+
+var int pvLastLowPairedPriceIdx = na
+var int pvLastLowPairedOscIdx = na
+var int pvLastHighPairedPriceIdx = na
+var int pvLastHighPairedOscIdx = na
+var int pvPrevBullPriceIdx = na
+var float pvPrevBullPrice = na
+var float pvPrevBullOsc = na
+var int pvPrevBearPriceIdx = na
+var float pvPrevBearPrice = na
+var float pvPrevBearOsc = na
+bool independentBullDiv = false
+bool independentBearDiv = false
+int independentBullPivotIndex = na
+int independentBearPivotIndex = na
+int independentBullPivotTime = na
+int independentBearPivotTime = na
+bool pivotWindowReady = ta.lowest(coreReady ? 1.0 : 0.0, pvLeft + pvRight + 1) >= 1.0
+
+if barstate.isconfirmed and enablePivotCompare
+    if not signalAllowed or not coreReady or not coreReady[1]
+        // 不跨D3缺失区间组配 Pivot，也不把恢复K当新信号。
+        pvLowPriceIdx := na
+        pvLowOscIdx := na
+        pvHighPriceIdx := na
+        pvHighOscIdx := na
+        pvPrevBullPriceIdx := na
+        pvPrevBearPriceIdx := na
+    else
+        if pivotWindowReady and not na(pvPriceLo) and not na(atrVal[pvRight])
+            pvLowPriceIdx := bar_index - pvRight
+            pvLowPriceTime := time_close[pvRight]
+            pvLowPrice := pvPriceLo
+            pvLowPriceATR := atrVal[pvRight]
+        if pivotWindowReady and not na(pvPriceHi) and not na(atrVal[pvRight])
+            pvHighPriceIdx := bar_index - pvRight
+            pvHighPriceTime := time_close[pvRight]
+            pvHighPrice := pvPriceHi
+            pvHighPriceATR := atrVal[pvRight]
+        if pivotWindowReady and not na(pvOscLo) and (not pvRequireExtreme or pvOscLo <= -extreme)
+            pvLowOscIdx := bar_index - pvRight
+            pvLowOsc := pvOscLo
+        if pivotWindowReady and not na(pvOscHi) and (not pvRequireExtreme or pvOscHi >= extreme)
+            pvHighOscIdx := bar_index - pvRight
+            pvHighOsc := pvOscHi
+
+        // 超过确认窗口还未匹配的候选不能长期滞留；对已经成对消费的索引无影响。
+        if not na(pvLowPriceIdx) and bar_index - pvLowPriceIdx > pvRight + pvOffsetMax
+            pvLowPriceIdx := na
+        if not na(pvLowOscIdx) and bar_index - pvLowOscIdx > pvRight + pvOffsetMax
+            pvLowOscIdx := na
+        if not na(pvHighPriceIdx) and bar_index - pvHighPriceIdx > pvRight + pvOffsetMax
+            pvHighPriceIdx := na
+        if not na(pvHighOscIdx) and bar_index - pvHighOscIdx > pvRight + pvOffsetMax
+            pvHighOscIdx := na
+        bool lowPairReady = not na(pvLowPriceIdx) and not na(pvLowOscIdx) and math.abs(pvLowPriceIdx - pvLowOscIdx) <= pvOffsetMax and (na(pvLastLowPairedPriceIdx) or pvLowPriceIdx != pvLastLowPairedPriceIdx) and (na(pvLastLowPairedOscIdx) or pvLowOscIdx != pvLastLowPairedOscIdx)
+        if lowPairReady
+            bool priorExists = not na(pvPrevBullPriceIdx) and not na(pvPrevBullPrice) and not na(pvPrevBullOsc)
+            int gapBars = priorExists ? pvLowPriceIdx - pvPrevBullPriceIdx : na
+            bool validInterval = priorExists and gapBars >= minLegBars and gapBars <= maxLegBars
+            float improvement = pvLowOsc - pvPrevBullOsc
+            float priceInATR = not na(pvLowPriceATR) and pvLowPriceATR > 0 ? (pvPrevBullPrice - pvLowPrice) / pvLowPriceATR : na
+            float failurePrice = pvLowPrice - stopAtrMult * pvLowPriceATR
+            // 在当前确认K结束前价格触碰参考失效位，则本次背离不能确认。
+            bool safeStop = not na(failurePrice) and close > failurePrice
+            for lag = 0 to pvRight + pvOffsetMax
+                if bar_index - lag > pvLowPriceIdx and low[lag] <= failurePrice
+                    safeStop := false
+            independentBullDiv := signalAllowed and validInterval and pvLowPrice < pvPrevBullPrice and pvLowOsc > pvPrevBullOsc and (not useStrengthFilter or (improvement >= minOscDelta and priceInATR >= minPriceAtr)) and safeStop
+            if independentBullDiv
+                independentBullPivotIndex := pvLowPriceIdx
+                independentBullPivotTime := pvLowPriceTime
+            pvPrevBullPriceIdx := pvLowPriceIdx
+            pvPrevBullPrice := pvLowPrice
+            pvPrevBullOsc := pvLowOsc
+            pvLastLowPairedPriceIdx := pvLowPriceIdx
+            pvLastLowPairedOscIdx := pvLowOscIdx
+        bool highPairReady = not na(pvHighPriceIdx) and not na(pvHighOscIdx) and math.abs(pvHighPriceIdx - pvHighOscIdx) <= pvOffsetMax and (na(pvLastHighPairedPriceIdx) or pvHighPriceIdx != pvLastHighPairedPriceIdx) and (na(pvLastHighPairedOscIdx) or pvHighOscIdx != pvLastHighPairedOscIdx)
+        if highPairReady
+            bool priorExists = not na(pvPrevBearPriceIdx) and not na(pvPrevBearPrice) and not na(pvPrevBearOsc)
+            int gapBars = priorExists ? pvHighPriceIdx - pvPrevBearPriceIdx : na
+            bool validInterval = priorExists and gapBars >= minLegBars and gapBars <= maxLegBars
+            float improvement = pvPrevBearOsc - pvHighOsc
+            float priceInATR = not na(pvHighPriceATR) and pvHighPriceATR > 0 ? (pvHighPrice - pvPrevBearPrice) / pvHighPriceATR : na
+            float failurePrice = pvHighPrice + stopAtrMult * pvHighPriceATR
+            bool safeStop = not na(failurePrice) and close < failurePrice
+            for lag = 0 to pvRight + pvOffsetMax
+                if bar_index - lag > pvHighPriceIdx and high[lag] >= failurePrice
+                    safeStop := false
+            independentBearDiv := signalAllowed and validInterval and pvHighPrice > pvPrevBearPrice and pvHighOsc < pvPrevBearOsc and (not useStrengthFilter or (improvement >= minOscDelta and priceInATR >= minPriceAtr)) and safeStop
+            if independentBearDiv
+                independentBearPivotIndex := pvHighPriceIdx
+                independentBearPivotTime := pvHighPriceTime
+            pvPrevBearPriceIdx := pvHighPriceIdx
+            pvPrevBearPrice := pvHighPrice
+            pvPrevBearOsc := pvHighOsc
+            pvLastHighPairedPriceIdx := pvHighPriceIdx
+            pvLastHighPairedOscIdx := pvHighOscIdx
+
+// ============================================================================
+// 08C — D3 Failure Swing（二次确认旁路，不改变原Episode/背离）
+// 0:无 1:退出极端后第一段反弹/反抽 2:再次回踩，未重入极端
+// C4触发当根即为首次可知；无前瞻引用。超时、数据缺失、重入极端全部重置。
+// ============================================================================
+var int fsBullPhase = 0
+var int fsBearPhase = 0
+var int fsBullStart = na
+var int fsBearStart = na
+var float fsBullPeak = na
+var float fsBullPullback = na
+var float fsBearTrough = na
+var float fsBearPullback = na
+bool bullFailureSwing = false
+bool bearFailureSwing = false
+if barstate.isconfirmed and enableFailureSwing
+    if not signalAllowed or not coreReady or not coreReady[1]
+        fsBullPhase := 0
+        fsBearPhase := 0
+    else
+        // 两侧Extreme都取消旧的超卖失败摆动：跨入超买属于新的波段，不应回溯判作旧底部失败摆动。
+        if d3 <= -extreme or d3 >= extreme
+            fsBullPhase := 0
+        else
+            if fsBullPhase == 0 and d3[1] <= -extreme and d3 > -extreme
+                fsBullPhase := 1
+                fsBullStart := bar_index
+                fsBullPeak := d3
+            else if fsBullPhase > 0 and bar_index - fsBullStart > fsMaxBars
+                fsBullPhase := 0
+            else if fsBullPhase == 1
+                if d3 > fsBullPeak
+                    fsBullPeak := d3
+                else if fsBullPeak - d3 >= fsPullback
+                    fsBullPullback := d3
+                    fsBullPhase := 2
+            else if fsBullPhase == 2
+                fsBullPullback := math.min(fsBullPullback, d3)
+                if d3 > fsBullPeak
+                    bullFailureSwing := signalAllowed and d3 > fsBullPullback and fsBullPullback > -extreme
+                    fsBullPhase := 0
+        // 对称保护：跨入超卖应取消上一轮超买失败摆动观察。
+        if d3 >= extreme or d3 <= -extreme
+            fsBearPhase := 0
+        else
+            if fsBearPhase == 0 and d3[1] >= extreme and d3 < extreme
+                fsBearPhase := 1
+                fsBearStart := bar_index
+                fsBearTrough := d3
+            else if fsBearPhase > 0 and bar_index - fsBearStart > fsMaxBars
+                fsBearPhase := 0
+            else if fsBearPhase == 1
+                if d3 < fsBearTrough
+                    fsBearTrough := d3
+                else if d3 - fsBearTrough >= fsPullback
+                    fsBearPullback := d3
+                    fsBearPhase := 2
+            else if fsBearPhase == 2
+                fsBearPullback := math.max(fsBearPullback, d3)
+                if d3 < fsBearTrough
+                    bearFailureSwing := signalAllowed and d3 < fsBearPullback and fsBearPullback < extreme
+                    fsBearPhase := 0
+
+// ============================================================================
+// 09 — 精简视觉
+// ============================================================================
+color colOB = color.new(#EF5350, 10)
+color colOS = color.new(#26A69A, 10)
+color colWave = color.new(#B2B5BE, 5)
+color colRef = color.new(#787B86, 78)
+color colRev = color.new(#2962FF, 5)
+
+plot(58, "Y轴上限", color=color.new(color.black,100), editable=false)
+plot(-58, "Y轴下限", color=color.new(color.black,100), editable=false)
+
+pOB = plot(showBands ? extreme : na, "超买 +40", color=color.new(#EF5350,35), linewidth=1)
+pOS = plot(showBands ? -extreme : na, "超卖 -40", color=color.new(#26A69A,35), linewidth=1)
+plot(showBands ? armLevel : na, "+25 Episode线", color=colRef, linewidth=1)
+plot(showBands ? 0.0 : na, "零轴", color=color.new(#787B86,65), linewidth=1)
+plot(showBands ? -armLevel : na, "-25 Episode线", color=colRef, linewidth=1)
+
+plot(showExtremeColumns and ob ? d3 : na, "超买柱", style=plot.style_columns, color=colOB, histbase=extreme)
+plot(showExtremeColumns and os ? d3 : na, "超卖柱", style=plot.style_columns, color=colOS, histbase=-extreme)
+plot(showWave ? d3 : na, "D3 主波段", color=colWave, style=plot.style_stepline, linewidth=2)
+
+var float obPeakVal = na
+var float osTroughVal = na
+
+if ob
+    obPeakVal := na(obPeakVal) ? d3 : math.max(obPeakVal, d3)
+else if d3 < armLevel
+    obPeakVal := na
+
+if os
+    osTroughVal := na(osTroughVal) ? d3 : math.min(osTroughVal, d3)
+else if d3 > -armLevel
+    osTroughVal := na
+
+plot(showPeakLock ? obPeakVal : na, "超买峰值锁定", color=color.new(#F23645,10), linewidth=1, style=plot.style_linebr)
+plot(showPeakLock ? osTroughVal : na, "超卖谷值锁定", color=color.new(#089981,10), linewidth=1, style=plot.style_linebr)
+
+plotshape(showStateDots and ob, title="超买状态点", style=shape.circle, location=location.top, color=color.white, size=size.tiny)
+plotshape(showStateDots and os, title="超卖状态点", style=shape.circle, location=location.bottom, color=color.white, size=size.tiny)
+
+// v1.9.7：恢复全部历史超买超卖事件可见；三类事件颜色与最终背离分层。
+// Ordinary/Stable/Reversal 事件计算和告警原样保留，图上只改变显示策略。
+// 同根K同时有反转和最终背离时，各自使用不同纵向位置，互不隐藏。
+bool visualHistory = showEventLabels and labelDensity != "只显示背离"
+bool visualFull = labelDensity == "全部事件"
+bool visualOB = visualHistory and barstate.isconfirmed and (reversalOB or (visualFull and (stableOB or ordinaryOB)))
+bool visualOS = visualHistory and barstate.isconfirmed and (reversalOS or (visualFull and (stableOS or ordinaryOS)))
+if visualOB
+    string tagOB = reversalOB ? "反转超买｜观察" : stableOB ? "稳定超买" : "普通超买"
+    // 所有事件仍各自出现在真实收盘K；只收缩可见文字，不删除普通/稳定/反转事件。
+    float yOB = reversalOB ? 65.0 : stableOB ? 55.0 : 45.0
+    string fullOB = f_cnLabel(tagOB)
+    string printedOB = compactLabels ? (reversalOB ? "反转超买" : stableOB ? "稳定超买" : "普通超买") : fullOB
+    string hintOB = fullOB + "\n确认收盘（北京） " + str.format_time(time_close, "MM-dd HH:mm", "Asia/Shanghai") + "\n仅作为超买观察；不等于做空信号"
+    label.new(bar_index, yOB, printedOB, style=label.style_label_down, color=reversalOB ? colRev : stableOB ? color.new(#E57373, 5) : colOB, textcolor=color.white, size=size.tiny, tooltip=hintOB)
+if visualOS
+    string tagOS = reversalOS ? "反转超卖｜观察" : stableOS ? "稳定超卖" : "普通超卖"
+    float yOS = reversalOS ? -65.0 : stableOS ? -55.0 : -45.0
+    string fullOS = f_cnLabel(tagOS)
+    string printedOS = compactLabels ? (reversalOS ? "反转超卖" : stableOS ? "稳定超卖" : "普通超卖") : fullOS
+    string hintOS = fullOS + "\n确认收盘（北京） " + str.format_time(time_close, "MM-dd HH:mm", "Asia/Shanghai") + "\n仅作为超卖观察；不等于做多信号"
+    label.new(bar_index, yOS, printedOS, style=label.style_label_up, color=reversalOS ? colRev : stableOS ? color.new(#26A69A, 0) : colOS, textcolor=color.white, size=size.tiny, tooltip=hintOS)
+
+// 只有候选“首次出现”的已收盘K才显示一次，不在连续多根Extreme中堆积。
+if showCandidate and barstate.isconfirmed and bullCandidate and not bullCandidate[1]
+    label.new(bar_index, -32.0, f_cnLabel("潜在底背离｜未确认"), style=label.style_label_up, color=color.new(#26A69A, 60), textcolor=color.white, size=size.tiny)
+if showCandidate and barstate.isconfirmed and bearCandidate and not bearCandidate[1]
+    label.new(bar_index, 32.0, f_cnLabel("潜在顶背离｜未确认"), style=label.style_label_down, color=color.new(#EF5350, 60), textcolor=color.white, size=size.tiny)
+
+// 恢复原始严格背离的历史可见性，但不可混同增强后最终确认。
+// 原始与最终在同根K出现时只绘最终标签；不同K则保留真实时间顺序。
+if showRawDivergenceLabels and enableDivRecovery and rawBullDivAtExit and not longSetup
+    label.new(bar_index, -35.0, f_cnLabel("原始底背离｜待价格确认"), style=label.style_label_up, color=color.new(#089981, 38), textcolor=color.white, size=size.tiny)
+if showRawDivergenceLabels and enableDivRecovery and rawBearDivAtExit and not shortSetup
+    label.new(bar_index, 35.0, f_cnLabel("原始顶背离｜待价格确认"), style=label.style_label_down, color=color.new(#F23645, 38), textcolor=color.white, size=size.tiny)
+
+if showDivergenceLabels and longSetup
+    string longTxt = (labelShowTimeframe ? tfNameCN + "｜" : "") + "底背离最终确认｜观察"
+    if not na(bullSignalStop)
+        longTxt += "\n失效参考 " + str.tostring(bullSignalStop, format.mintick)
+    label.new(bar_index, -45.0, longTxt, style=label.style_label_up, color=color.new(#089981, 0), textcolor=color.white, size=size.small)
+
+if showDivergenceLabels and shortSetup
+    string shortTxt = (labelShowTimeframe ? tfNameCN + "｜" : "") + "顶背离最终确认｜观察"
+    if not na(bearSignalStop)
+        shortTxt += "\n失效参考 " + str.tostring(bearSignalStop, format.mintick)
+    label.new(bar_index, 45.0, shortTxt, style=label.style_label_down, color=color.new(#F23645, 0), textcolor=color.white, size=size.small)
+
+// 旁路事件标签只画在首次确认收盘K，绝不回填至Pivot发生的历史K。
+if showPivotCompareLabels and independentBullDiv
+    label.new(bar_index, -42.0, f_cnLabel("独立Pivot底背离｜实验"), style=label.style_label_up, color=color.new(color.lime, 30), textcolor=color.white, size=size.tiny)
+if showPivotCompareLabels and independentBearDiv
+    label.new(bar_index, 42.0, f_cnLabel("独立Pivot顶背离｜实验"), style=label.style_label_down, color=color.new(color.red, 30), textcolor=color.white, size=size.tiny)
+if showFailureSwingLabels and bullFailureSwing
+    label.new(bar_index, -37.0, f_cnLabel("超卖失败摆动｜实验"), style=label.style_label_up, color=color.new(color.teal, 20), textcolor=color.white, size=size.tiny)
+if showFailureSwingLabels and bearFailureSwing
+    label.new(bar_index, 37.0, f_cnLabel("超买失败摆动｜实验"), style=label.style_label_down, color=color.new(color.orange, 20), textcolor=color.white, size=size.tiny)
+plot(showPercentileLines and percentileReady ? d3P95 : na, "历史P95(仅过去样本)", color=color.new(color.red, 60), linewidth=1)
+plot(showPercentileLines and percentileReady ? d3P05 : na, "历史P05(仅过去样本)", color=color.new(color.teal, 60), linewidth=1)
+
+plotchar(not signalAllowed, title="当前周期无正式信号资格（周期禁用/合成K）", char="!", location=location.top, color=color.orange, size=size.tiny)
+
+// 最新K中文状态徽章：切换到30分钟/1小时/4小时/日线/周线，都能立即看到中文状态。
+var label currentBadge = na
+if barstate.islast
+    if not na(currentBadge)
+        label.delete(currentBadge)
+
+    if showCurrentBadge
+        string badgeTxt = tfNameCN + "｜" + classText
+        badgeTxt += "｜" + (normPhase > 0 ? "OUT" : normPhase < 0 ? "IN" : "FLAT")
+        badgeTxt += "\n" + (barstate.isconfirmed ? "收盘" : "盘中") + " D3 " + (na(d3) ? "—" : str.tostring(d3, "#.##"))
+        badgeTxt += not barstate.isconfirmed ? "｜上次收盘 " + (na(d3[1]) ? "—" : str.tostring(d3[1], "#.##")) : ""
+
+        float badgeY = na(d3) ? 0.0 : math.max(-52.0, math.min(52.0, d3))
+        color badgeColor = reversalLabelFired ? color.new(#2962FF, 5) : episodeSide == 1 ? color.new(#EF5350, 12) : episodeSide == -1 ? color.new(#26A69A, 12) : color.new(#787B86, 18)
+        currentBadge := label.new(bar_index, badgeY, badgeTxt, style=label.style_label_left, color=badgeColor, textcolor=color.white, size=size.small)
+
+// ============================================================================
+// 10 — TradingView 可选告警条件
+// ============================================================================
+alertcondition(ordinaryOB, "普通超买", "{{ticker}} {{interval}}：Eric Swing 普通超买，收盘={{close}}")
+alertcondition(ordinaryOS, "普通超卖", "{{ticker}} {{interval}}：Eric Swing 普通超卖，收盘={{close}}")
+alertcondition(reversalOB, "反转超买", "{{ticker}} {{interval}}：Eric Swing 反转超买，收盘={{close}}")
+alertcondition(reversalOS, "反转超卖", "{{ticker}} {{interval}}：Eric Swing 反转超卖，收盘={{close}}")
+alertcondition(stableOB, "稳定超买（增强观察）", "{{ticker}} {{interval}}：超买保持多根收盘，观察信号，不是做空指令")
+alertcondition(stableOS, "稳定超卖（增强观察）", "{{ticker}} {{interval}}：超卖保持多根收盘，观察信号，不是做多指令")
+alertcondition(enablePivotCompare and pivotCompareAlert and independentBullDiv, "独立Pivot底背离｜旁路实验", "{{ticker}} {{interval}}：独立价格/D3 Pivot比较结果。仅实验，不是交易指令")
+alertcondition(enablePivotCompare and pivotCompareAlert and independentBearDiv, "独立Pivot顶背离｜旁路实验", "{{ticker}} {{interval}}：独立价格/D3 Pivot比较结果。仅实验，不是交易指令")
+alertcondition(bullFailureSwing, "D3超卖失败摆动｜研究", "{{ticker}} {{interval}}：D3先退出超卖后再次回踩但未重入，突破前D3高点，仅研究")
+alertcondition(bearFailureSwing, "D3超买失败摆动｜研究", "{{ticker}} {{interval}}：D3先退出超买后再次反抽但未重入，跌破前D3低点，仅研究")
+alertcondition(longSetup, "底背离确认（观察）", "{{ticker}} {{interval}}：底背离已确认，仅观察，非交易指令，收盘={{close}}")
+alertcondition(shortSetup, "顶背离确认（观察）", "{{ticker}} {{interval}}：顶背离已确认，仅观察，非交易指令，收盘={{close}}")
+alertcondition(mtfBearReversalSyncNew, "MTF｜4小时反转超买共振", "{{ticker}}：4小时反转超买与30分钟/1小时形成同向反转结构")
+alertcondition(mtfBullReversalSyncNew, "MTF｜4小时反转超卖共振", "{{ticker}}：4小时反转超卖与30分钟/1小时形成同向反转结构")
+alertcondition(mtfBearLowerLeadNew, "MTF｜低周期当前反转超买", "{{ticker}}：30分钟+1小时已反转超买，4小时尚未反转")
+alertcondition(mtfBullLowerLeadNew, "MTF｜低周期当前反转超卖", "{{ticker}}：30分钟+1小时已反转超卖，4小时尚未反转")
+
+// 动态 JSON：适合 Any alert() function call + Email / App / Webhook。
+// v1.9.5：14条告警均位于 enableJsonAlert and barstate.isconfirmed 硬门槛之内。
+// 允许同一根收盘K有多种不同事件各自单独上报。使用freq_all仅改变分发，不让盘中发送。
+// 使用TradingView警报频率/过载限制时仍需实际平台验证。
+f_numJson(float v) =>
+    na(v) ? "null" : str.tostring(v, "#.########")
+
+f_intJson(int v) =>
+    na(v) ? "null" : str.tostring(v)
+
+f_escapeJson(string value) =>
+    string out = str.replace_all(value, "\\", "\\\\")
+    out := str.replace_all(out, "\"", "\\\"")
+    out := str.replace_all(out, "\n", "\\n")
+    out := str.replace_all(out, "\r", "\\r")
+    out := str.replace_all(out, "\t", "\\t")
+    out
+
+f_eventMeta(string eventName) =>
+    string id = scriptVersion + "|" + syminfo.tickerid + "|" + timeframe.period + "|" + str.tostring(time_close) + "|" + eventName + "|" + coreConfig + "|" + divergenceConfig + "|" + qualityConfig + "|" + researchConfig
+    string msg = "\"schema_version\":2,\"version\":\"" + scriptVersion + "\""
+    msg += ",\"event_id\":\"" + f_escapeJson(id) + "\""
+    msg += ",\"symbol\":\"" + f_escapeJson(syminfo.tickerid) + "\""
+    msg += ",\"timeframe\":\"" + timeframe.period + "\""
+    msg += ",\"timeframe_cn\":\"" + tfNameCN + "\""
+    msg += ",\"event\":\"" + f_escapeJson(eventName) + "\""
+    msg += ",\"bar_open_time\":" + f_intJson(time)
+    msg += ",\"bar_close_time\":" + f_intJson(time_close)
+    msg += ",\"confirmed\":" + (barstate.isconfirmed ? "true" : "false")
+    msg += ",\"baseline_parameters\":" + (baselineParams ? "true" : "false")
+    msg += ",\"standard_chart\":" + (standardChart ? "true" : "false")
+    msg += ",\"core_config\":\"" + coreConfig + "\""
+    msg += ",\"quality_config\":\"" + qualityConfig + "\""
+    msg += ",\"research_config\":\"" + researchConfig + "\""
+    msg += ",\"enhanced_mode\":" + (enhancedMode ? "true" : "false")
+    msg += ",\"evidence\":\"" + f_escapeJson(tfEvidence) + "\""
+    msg
+
+f_json(string eventName, string action, float pivot, float stopRef) =>
+    string msg = "{" + f_eventMeta(eventName)
+    msg += ",\"action\":\"" + f_escapeJson(action) + "\""
+    msg += ",\"close\":" + f_numJson(close)
+    msg += ",\"d3\":" + f_numJson(d3)
+    msg += ",\"norm_phase\":" + f_numJson(normPhase)
+    msg += ",\"pivot\":" + f_numJson(pivot)
+    msg += ",\"stop_reference\":" + f_numJson(stopRef)
+    msg += ",\"wait_bars_max\":" + str.tostring(divMaxWait)
+    msg += ",\"market_context\":\"" + f_escapeJson(trendText) + "\""
+    msg += ",\"relative_d3_extreme\":\"" + f_escapeJson(relativeExtremeText) + "\""
+    msg += ",\"independent_pivot_sidecar\":" + (str.contains(eventName, "independent_pivot") ? "true" : "false")
+    int researchPivotBar = str.contains(eventName, "independent_pivot_bullish") ? independentBullPivotIndex : str.contains(eventName, "independent_pivot_bearish") ? independentBearPivotIndex : na
+    int researchPivotTime = str.contains(eventName, "independent_pivot_bullish") ? independentBullPivotTime : str.contains(eventName, "independent_pivot_bearish") ? independentBearPivotTime : na
+    msg += ",\"pivot_bar_index\":" + f_intJson(researchPivotBar)
+    msg += ",\"pivot_close_time\":" + f_intJson(researchPivotTime)
+    msg += ",\"detected_close_time\":" + f_intJson(time_close)
+    msg += ",\"divergence_config\":\"" + divergenceConfig + "\""
+    msg += "}"
+    msg
+
+f_mtfJson(string eventName, string structureText) =>
+    string msg = "{" + f_eventMeta(eventName)
+    msg += ",\"structure_cn\":\"" + f_escapeJson(structureText) + "\""
+    msg += ",\"mtf30_state\":" + f_intJson(mtf30State)
+    msg += ",\"mtf1h_state\":" + f_intJson(mtf1HState)
+    msg += ",\"mtf4h_state\":" + f_intJson(mtf4HState)
+    msg += ",\"mtf1d_state\":" + f_intJson(mtf1DState)
+    msg += ",\"mtf1w_state\":" + f_intJson(mtf1WState)
+    msg += ",\"mtf30_close_time\":" + f_intJson(mtf30Close)
+    msg += ",\"mtf1h_close_time\":" + f_intJson(mtf1HClose)
+    msg += ",\"mtf4h_close_time\":" + f_intJson(mtf4HClose)
+    msg += ",\"mtf1d_close_time\":" + f_intJson(mtf1DClose)
+    msg += ",\"mtf1w_close_time\":" + f_intJson(mtf1WClose)
+    msg += ",\"closed_bars_only\":" + (mtfUseClosedBars ? "true" : "false")
+    msg += ",\"evaluation_scope\":\"chart_bar_close_snapshot\""
+    msg += "}"
+    msg
+
+if enableJsonAlert and barstate.isconfirmed
+    if alertFilterEvents and ordinaryOB
+        alert(f_json("ordinary_overbought", "observe_short", na, na), alert.freq_all)
+    if alertFilterEvents and ordinaryOS
+        alert(f_json("ordinary_oversold", "observe_long", na, na), alert.freq_all)
+    if alertFilterEvents and stableOB
+        alert(f_json("stable_overbought", "observe_short", na, na), alert.freq_all)
+    if alertFilterEvents and stableOS
+        alert(f_json("stable_oversold", "observe_long", na, na), alert.freq_all)
+    if alertFilterEvents and reversalOB
+        alert(f_json("reversal_overbought", "reversal_watch_short", na, na), alert.freq_all)
+    if alertFilterEvents and reversalOS
+        alert(f_json("reversal_oversold", "reversal_watch_long", na, na), alert.freq_all)
+    if alertTradeSignals and longSetup
+        alert(f_json("bullish_divergence_confirmed", "observe_long", bullSignalPivot, bullSignalStop), alert.freq_all)
+    if alertTradeSignals and shortSetup
+        alert(f_json("bearish_divergence_confirmed", "observe_short", bearSignalPivot, bearSignalStop), alert.freq_all)
+
+    if enablePivotCompare and pivotCompareAlert and independentBullDiv
+        alert(f_json("independent_pivot_bullish_research", "observe_only", na, na), alert.freq_all)
+    if enablePivotCompare and pivotCompareAlert and independentBearDiv
+        alert(f_json("independent_pivot_bearish_research", "observe_only", na, na), alert.freq_all)
+
+    if alertMTFResonance and mtfBearReversalSyncNew
+        alert(f_mtfJson("mtf_bear_reversal_sync", mtfResonanceText), alert.freq_all)
+    if alertMTFResonance and mtfBullReversalSyncNew
+        alert(f_mtfJson("mtf_bull_reversal_sync", mtfResonanceText), alert.freq_all)
+    if alertMTFResonance and mtfBearLowerLeadNew
+        alert(f_mtfJson("mtf_bear_lower_tf_reversal_state", mtfResonanceText), alert.freq_all)
+    if alertMTFResonance and mtfBullLowerLeadNew
+        alert(f_mtfJson("mtf_bull_lower_tf_reversal_state", mtfResonanceText), alert.freq_all)
+
+// ============================================================================
+// 11 — 当前状态面板
+// ============================================================================
+f_stateCN(int stateCode) =>
+    string out = na(stateCode) ? "无有效快照" : "中性"
+    if stateCode == 1
+        out := "本轮已触发普通超买"
+    else if stateCode == -1
+        out := "本轮已触发普通超卖"
+    else if stateCode == 2
+        out := "本轮已触发反转超买"
+    else if stateCode == -2
+        out := "本轮已触发反转超卖"
+    else if stateCode == 3
+        out := "超买侧待确认"
+    else if stateCode == -3
+        out := "超卖侧待确认"
+    out
+
+f_stateShortCN(int stateCode) =>
+    na(stateCode) ? "缺数据" : stateCode == 1 ? "普通超买" : stateCode == -1 ? "普通超卖" : stateCode == 2 ? "反转超买" : stateCode == -2 ? "反转超卖" : stateCode == 3 ? "超买待确认" : stateCode == -3 ? "超卖待确认" : "中性"
+
+f_phaseCN(float p) =>
+    na(p) ? "—" : p > 0 ? "OUT" : p < 0 ? "IN" : "FLAT"
+
+f_stateColor(int stateCode) =>
+    color out = color.white
+    if stateCode == 2 or stateCode == -2
+        out := color.aqua
+    else if stateCode == 1
+        out := color.rgb(255, 120, 120)
+    else if stateCode == -1
+        out := color.rgb(120, 255, 170)
+    else if stateCode == 3 or stateCode == -3
+        out := color.rgb(255, 210, 90)
+    out
+
+f_rowBg(int rowNo) =>
+    zebraRows ? (rowNo % 2 == 0 ? color.new(color.white, 94) : color.new(color.silver, 96)) : color.new(color.black, 100)
+
+color headerBg = color.new(color.rgb(25, 28, 34), 0)
+color keyBg = color.new(color.rgb(38, 42, 50), 0)
+color valueBg = color.new(color.rgb(18, 21, 28), 0)
+
+string strategyText = not coreReady ? coreDataStatus : longSetup ? "底背离+价格确认｜观察" : shortSetup ? "顶背离+价格确认｜观察" : bullDivRejected or bearDivRejected ? "背离失效位未通过" : bullRecoveryCancelled or bearRecoveryCancelled ? "候选取消/过期" : waitBull ? "底背离等待价格确认" : waitBear ? "顶背离等待价格确认" : bullCandidate ? "潜在底背离" : bearCandidate ? "潜在顶背离" : "无"
+
+// 诊断只解释最近已收盘K保存的Extreme配对门槛，不修改任何信号资格。
+// 未收盘时不读取当前4H的高低点来推测“确认背离”。
+bool closedExtremeOS = barstate.isconfirmed ? os : (not na(d3[1]) and d3[1] <= -extreme)
+bool closedExtremeOB = barstate.isconfirmed ? ob : (not na(d3[1]) and d3[1] >= extreme)
+string divergenceGateHint = ""
+if not enableDivergence
+    divergenceGateHint := "背离模块已关闭"
+else if not coreReady
+    divergenceGateHint := "D3数据不足｜暂停确认"
+else if closedExtremeOS and osActive
+    if na(prevTroughIdx) or na(prevTroughLow) or na(prevTroughOsc)
+        divergenceGateHint := "底背离：缺上一段超卖极值"
+    else if na(curTroughIdx) or na(curTroughLow) or na(curTroughOsc)
+        divergenceGateHint := "底背离：本段极值未形成"
+    else if curTroughIdx - prevTroughIdx < minLegBars or curTroughIdx - prevTroughIdx > maxLegBars
+        divergenceGateHint := "底背离：间隔" + str.tostring(curTroughIdx - prevTroughIdx) + "K（需" + str.tostring(minLegBars) + "-" + str.tostring(maxLegBars) + "K）"
+    else if curTroughLow >= prevTroughLow
+        divergenceGateHint := "底背离：价格未创新低"
+    else if curTroughOsc <= prevTroughOsc
+        divergenceGateHint := "底背离：D3未抬高"
+    else
+        [hintStrengthOK, hintOscDelta, hintPriceAtr] = f_bullStrength(curTroughLow, prevTroughLow, curTroughOsc, prevTroughOsc, curTroughAtr)
+        divergenceGateHint := not hintStrengthOK ? "底背离：价格/D3强度不足" : "底背离候选：等待收盘出区"
+else if closedExtremeOB and obActive
+    if na(prevPeakIdx) or na(prevPeakHigh) or na(prevPeakOsc)
+        divergenceGateHint := "顶背离：缺上一段超买极值"
+    else if na(curPeakIdx) or na(curPeakHigh) or na(curPeakOsc)
+        divergenceGateHint := "顶背离：本段极值未形成"
+    else if curPeakIdx - prevPeakIdx < minLegBars or curPeakIdx - prevPeakIdx > maxLegBars
+        divergenceGateHint := "顶背离：间隔" + str.tostring(curPeakIdx - prevPeakIdx) + "K（需" + str.tostring(minLegBars) + "-" + str.tostring(maxLegBars) + "K）"
+    else if curPeakHigh <= prevPeakHigh
+        divergenceGateHint := "顶背离：价格未创新高"
+    else if curPeakOsc >= prevPeakOsc
+        divergenceGateHint := "顶背离：D3未降低"
+    else
+        [hintStrengthOK, hintOscDelta, hintPriceAtr] = f_bearStrength(curPeakHigh, prevPeakHigh, curPeakOsc, prevPeakOsc, curPeakAtr)
+        divergenceGateHint := not hintStrengthOK ? "顶背离：价格/D3强度不足" : "顶背离候选：等待收盘出区"
+
+
+// v1.9.10: 面板的“已收盘”口径必须冻结到最后一根已确认K。
+// 非收盘期间当前K的 D3 / Phase / Episode / 背离诊断都只能作为盘中预览，
+// 不能与已确认的MTF同行状态混用。全部仅涉及展示，不改变信号和告警。
+float confirmedPanelD3 = barstate.isconfirmed ? d3 : d3[1]
+float confirmedPanelPhase = barstate.isconfirmed ? normPhase : normPhase[1]
+bool confirmedPanelReady = barstate.isconfirmed ? coreReady : coreReady[1]
+int confirmedPanelEpisode = barstate.isconfirmed ? episodeSide : episodeSide[1]
+string confirmedPanelGate = barstate.isconfirmed ? divergenceGateHint : divergenceGateHint[1]
+string confirmedPanelStrategy = barstate.isconfirmed ? strategyText : strategyText[1]
+string confirmedPanelClass = barstate.isconfirmed ? classText : classText[1]
+string confirmedPanelTrend = barstate.isconfirmed ? trendText : trendText[1]
+float confirmedPanelAdx = barstate.isconfirmed ? trendADX : trendADX[1]
+
+var table dash = table.new(position.top_right, 2, displayMode == "详细" ? 15 : 9, bgcolor=color.new(color.black, panelTransp), border_width=1)
+
+if barstate.islast
+    // 关闭面板、切换精简/详细时，先清掉旧文本，避免上版状态残留。
+    table.clear(dash, 0, 0, 1, displayMode == "详细" ? 14 : 8)
+    if showDashboard
+        if displayMode == "详细"
+            table.cell(dash, 0, 0, "Eric Swing v" + scriptVersion, text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(dash, 1, 0, tfStatus, text_color=tfValidated ? color.lime : signalAllowed ? color.orange : color.red, text_size=size.small, bgcolor=headerBg)
+            
+            table.cell(dash, 0, 1, (barstate.isconfirmed ? "收盘 D3" : "实时 D3"), text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 1, na(d3) ? "—" : str.tostring(d3, "#.###"), text_color=color.white, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 2, "当前区域", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 2, zoneText, text_color=ob ? color.rgb(255,120,120) : os ? color.rgb(120,255,170) : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 3, barstate.isconfirmed ? "当前相位" : "实时相位｜预览", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 3, phaseText, text_color=normPhase > 0 ? color.orange : normPhase < 0 ? color.aqua : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 4, "本轮事件状态", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 4, classText, text_color=reversalLabelFired ? color.aqua : ordinaryLabelFired ? color.yellow : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 5, "本K事件", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 5, eventText, text_color=eventText == "反转超买" or eventText == "反转超卖" ? color.aqua : eventText == "普通超买" ? color.rgb(255,120,120) : eventText == "普通超卖" ? color.rgb(120,255,170) : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 6, "背离（最近收盘）", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 6, not coreReady ? "暂停｜数据未就绪" : longSetup ? "底背离最终确认" : shortSetup ? "顶背离最终确认" : waitBull ? "底背离待价格确认" : waitBear ? "顶背离待价格确认" : bullCandidate ? "潜在底背离" : bearCandidate ? "潜在顶背离" : na(lastConfirmedDivTime) ? "无历史确认" : "上次" + lastConfirmedDivName + " " + str.format_time(lastConfirmedDivTime, "MM-dd", "Asia/Shanghai"), text_color=longSetup or bullCandidate ? color.lime : shortSetup or bearCandidate ? color.red : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 7, "策略", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 7, strategyText, text_color=longSetup ? color.lime : shortSetup ? color.red : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 8, "当前周期", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 8, tfNameCN, text_color=tfValidated ? color.lime : signalAllowed ? color.orange : color.red, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 9, "最近事件", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 9, lastEventText, text_color=lastEventText == "无" ? color.silver : color.yellow, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 10, "最近事件收盘时间", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 10, na(lastEventTime) ? "—" : str.format_time(lastEventTime, "MM-dd HH:mm", "UTC") + " UTC", text_color=color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 11, "核心规则", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 11, (enableExtremeQuality ? "区分初触/稳定；" : "超买超卖原版；") + (enableReversalQuality ? "反转需连续IN；" : "反转原版；") + (enableDivRecovery ? "背离需价格确认" : "背离原版"), text_color=color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(dash, 0, 12, "历史D3分位", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 12, relativeExtremeText + (percentileReady ? "｜P05 " + str.tostring(d3P05, "#.##") + " / P95 " + str.tostring(d3P95, "#.##") : ""), text_color=historicallyExtremeOB ? color.rgb(255,130,120) : historicallyExtremeOS ? color.rgb(100,225,175) : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 13, "趋势背景", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 13, trendText + (trendReady ? "｜ADX " + str.tostring(trendADX,"#.##") : ""), text_color=strongUptrend or strongDowntrend ? color.orange : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 14, "独立旁路/失败摆动", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 14, independentBullDiv ? "新Pivot底背离｜实验" : independentBearDiv ? "新Pivot顶背离｜实验" : bullFailureSwing ? "新失败摆动(多)" : bearFailureSwing ? "新失败摆动(空)" : "无新旁路信号", text_color=independentBullDiv or independentBearDiv or bullFailureSwing or bearFailureSwing ? color.aqua : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+        else
+            // 盘中值必须与上一根已收盘K分开，避免把形成中D3当正式确认。
+            // 已收盘数值、区域、相位、背离诊断共享同一根确认K。
+            string lastClosedD3 = na(confirmedPanelD3) ? "—" : str.tostring(confirmedPanelD3, "#.##")
+            string previewD3 = na(d3) ? "—" : str.tostring(d3, "#.##")
+            string previewPhase = na(normPhase) ? "—" : normPhase > 0 ? "OUT" : normPhase < 0 ? "IN" : "FLAT"
+            string shortPhase = not confirmedPanelReady or na(confirmedPanelPhase) ? "待确认" : confirmedPanelPhase > 0 ? "OUT｜扩张" : confirmedPanelPhase < 0 ? "IN｜收缩" : "FLAT"
+            string shortArea = not confirmedPanelReady ? "无已确认数据" : confirmedPanelD3 >= extreme ? "超买" : confirmedPanelD3 <= -extreme ? "超卖" : confirmedPanelEpisode == 1 ? "超买侧" : confirmedPanelEpisode == -1 ? "超卖侧" : "中性"
+            string shortEventLive = not coreReady ? "暂停｜数据不足" : reversalOB ? "反转超买｜观察" : reversalOS ? "反转超卖｜观察" : ordinaryOB ? "普通超买" : ordinaryOS ? "普通超卖" : stableOB ? "稳定超买" : stableOS ? "稳定超卖" : "无新事件"
+            string shortEvent = barstate.isconfirmed ? shortEventLive : not coreReady[1] ? "暂停｜数据不足" : reversalOB[1] ? "反转超买｜观察" : reversalOS[1] ? "反转超卖｜观察" : ordinaryOB[1] ? "普通超买" : ordinaryOS[1] ? "普通超卖" : stableOB[1] ? "稳定超买" : stableOS[1] ? "稳定超卖" : "无新事件"
+            table.cell(dash, 0, 0, "Eric v" + scriptVersion, text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(dash, 1, 0, tfNameCN + "｜实验版", text_color=color.orange, text_size=size.small, bgcolor=headerBg)
+            table.cell(dash, 0, 1, "D3 已收盘", text_color=color.white, text_size=size.small, bgcolor=keyBg)
+            table.cell(dash, 1, 1, lastClosedD3, text_color=color.white, text_size=size.small, bgcolor=valueBg)
+            table.cell(dash, 0, 2, "D3 盘中预览", text_color=color.silver, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 2, barstate.isconfirmed ? "—（当前已收盘）" : previewD3 + "｜" + previewPhase + "（预览）", text_color=color.silver, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 3, "已收盘区域/动能", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 3, shortArea + "｜" + shortPhase, text_color=confirmedPanelD3 >= extreme ? color.rgb(255,130,130) : confirmedPanelD3 <= -extreme ? color.rgb(120,220,175) : color.white, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 4, "已收盘波段", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 4, confirmedPanelClass, text_color=color.white, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 5, "最新已收盘事件", text_color=color.silver, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 5, shortEvent, text_color=reversalOB or reversalOS ? color.aqua : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 6, "已收盘背离", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 6, confirmedPanelStrategy == "无" and not na(confirmedPanelGate) and str.length(confirmedPanelGate) > 0 ? confirmedPanelGate : confirmedPanelStrategy == "无" and not na(lastConfirmedDivTime) ? "本轮无｜上次" + lastConfirmedDivName + " " + str.format_time(lastConfirmedDivTime, "MM-dd", "Asia/Shanghai") : confirmedPanelStrategy, text_color=longSetup ? color.lime : shortSetup ? color.rgb(255,130,130) : color.silver, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 7, "趋势背景", text_color=color.silver, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 7, confirmedPanelTrend + (not na(confirmedPanelAdx) ? "｜ADX " + str.tostring(confirmedPanelAdx, "#.0") : ""), text_color=color.silver, text_size=size.tiny, bgcolor=valueBg)
+            table.cell(dash, 0, 8, "最近信号时间", text_color=color.silver, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(dash, 1, 8, na(lastEventTime) ? "—" : str.format_time(lastEventTime, "MM-dd HH:mm", "Asia/Shanghai") + " 北京", text_color=color.silver, text_size=size.tiny, bgcolor=valueBg)
+
+// ============================================================================
+// 12 — 多周期中文状态矩阵 + 共振解释
+// ----------------------------------------------------------------------------
+// 30分钟 / 1小时 / 4小时 / 日线 / 周线同时查看。
+// 4小时为已回归周期；其余周期为同公式推演。
+// “共振”只描述状态结构，不代表收益保证或自动交易结论。
+// ============================================================================
+var table mtfDash = table.new(position.bottom_right, displayMode == "详细" ? 6 : 4, displayMode == "详细" ? 9 : 7, bgcolor=color.new(color.black, panelTransp), border_width=1)
+
+if barstate.isfirst
+    if displayMode == "详细"
+        table.merge_cells(mtfDash, 1, 6, 5, 6)
+        table.merge_cells(mtfDash, 1, 7, 5, 7)
+        table.merge_cells(mtfDash, 1, 8, 5, 8)
+    else
+        table.merge_cells(mtfDash, 1, 6, 3, 6)
+
+if barstate.islast
+    if showMTFMatrix
+        if displayMode == "详细"
+            table.cell(mtfDash, 0, 0, "周期", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 1, 0, (mtfUseClosedBars ? "已收盘 D3" : "预览 D3"), text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 2, 0, "相位", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 3, 0, "本轮事件状态", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 4, 0, "证据口径", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 5, 0, "快照收盘时间 UTC", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            
+            table.cell(mtfDash, 0, 1, "30分钟", text_color=is30M ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 1, 1, na(mtf30D3) ? "—" : str.tostring(mtf30D3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 2, 1, f_phaseCN(mtf30Phase), text_color=mtf30Phase < 0 ? color.rgb(255,210,90) : color.white, text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 3, 1, f_stateCN(mtf30State), text_color=f_stateColor(mtf30State), text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 4, 1, (not standardChart ? "非标准图表未验证" : not baselineParams ? "自定义参数未验证" : "使用确认｜待精确锚"), text_color=baselineParams and standardChart ? color.orange : color.orange, text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 5, 1, na(mtf30Close) ? "—" : str.format_time(mtf30Close, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(1))
+            
+            table.cell(mtfDash, 0, 2, "1小时", text_color=is1H ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 1, 2, na(mtf1HD3) ? "—" : str.tostring(mtf1HD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 2, 2, f_phaseCN(mtf1HPhase), text_color=mtf1HPhase < 0 ? color.rgb(255,210,90) : color.white, text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 3, 2, f_stateCN(mtf1HState), text_color=f_stateColor(mtf1HState), text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 4, 2, (not standardChart ? "非标准图表未验证" : not baselineParams ? "自定义参数未验证" : "截图锚已找到｜待逐K核验"), text_color=baselineParams and standardChart ? color.yellow : color.orange, text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 5, 2, na(mtf1HClose) ? "—" : str.format_time(mtf1HClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(2))
+            
+            table.cell(mtfDash, 0, 3, "4小时", text_color=is4H ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 1, 3, na(mtf4HD3) ? "—" : str.tostring(mtf4HD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 2, 3, f_phaseCN(mtf4HPhase), text_color=mtf4HPhase < 0 ? color.rgb(255,210,90) : color.white, text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 3, 3, f_stateCN(mtf4HState), text_color=f_stateColor(mtf4HState), text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 4, 3, (not standardChart ? "非标准图表未验证" : not baselineParams ? "自定义参数未验证" : (enhancedMode ? "v1.9实验｜待回放" : "旧版4H历史对照")), text_color=baselineParams and standardChart and not enhancedMode ? color.lime : color.orange, text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 5, 3, na(mtf4HClose) ? "—" : str.format_time(mtf4HClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(3))
+            
+            table.cell(mtfDash, 0, 4, "日线", text_color=is1D ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 1, 4, na(mtf1DD3) ? "—" : str.tostring(mtf1DD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 2, 4, f_phaseCN(mtf1DPhase), text_color=mtf1DPhase < 0 ? color.rgb(255,210,90) : color.white, text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 3, 4, f_stateCN(mtf1DState), text_color=f_stateColor(mtf1DState), text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 4, 4, (not standardChart ? "非标准图表未验证" : not baselineParams ? "自定义参数未验证" : "部分验证"), text_color=baselineParams and standardChart ? color.yellow : color.orange, text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 5, 4, na(mtf1DClose) ? "—" : str.format_time(mtf1DClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(4))
+            
+            table.cell(mtfDash, 0, 5, "周线", text_color=is1W ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 1, 5, na(mtf1WD3) ? "—" : str.tostring(mtf1WD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 2, 5, f_phaseCN(mtf1WPhase), text_color=mtf1WPhase < 0 ? color.rgb(255,210,90) : color.white, text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 3, 5, f_stateCN(mtf1WState), text_color=f_stateColor(mtf1WState), text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 4, 5, (not standardChart ? "非标准图表未验证" : not baselineParams ? "自定义参数未验证" : "部分验证"), text_color=baselineParams and standardChart ? color.yellow : color.orange, text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 5, 5, na(mtf1WClose) ? "—" : str.format_time(mtf1WClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(5))
+            
+            table.cell(mtfDash, 0, 6, "共振结论", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(mtfDash, 1, 6, mtfResonanceText, text_color=mtfBearReversalSync ? color.rgb(255,120,120) : mtfBullReversalSync ? color.rgb(120,255,170) : (mtfBearLowerLead or mtfBullLowerLead) ? color.rgb(255,210,90) : color.white, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(mtfDash, 0, 7, "结构解读", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(mtfDash, 1, 7, mtfStructureText, text_color=color.silver, text_size=size.tiny, bgcolor=valueBg)
+            
+            table.cell(mtfDash, 0, 8, "数据口径", text_color=color.silver, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(mtfDash, 1, 8, (mtfUseClosedBars ? "高周期下一周期更新；图表收盘检查共振；低周期历史受套餐限制" : "形成中预览；共振告警暂停"), text_color=mtfUseClosedBars ? color.silver : color.orange, text_size=size.tiny, bgcolor=valueBg)
+            
+        else
+            table.cell(mtfDash, 0, 0, "周期", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 1, 0, (mtfUseClosedBars ? "已收盘D3" : "预览D3"), text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 2, 0, "状态 / 相位", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 3, 0, "收盘时间 UTC", text_color=color.white, text_size=size.small, bgcolor=headerBg)
+            table.cell(mtfDash, 0, 1, "30m", text_color=is30M ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 1, 1, na(mtf30D3) ? "—" : str.tostring(mtf30D3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 2, 1, f_stateShortCN(mtf30State) + "/" + f_phaseCN(mtf30Phase) + (mtf30Fresh ? "" : "｜过期"), text_color=f_stateColor(mtf30State), text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 3, 1, na(mtf30Close) ? "—" : str.format_time(mtf30Close, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(1))
+            table.cell(mtfDash, 0, 2, "1H", text_color=is1H ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 1, 2, na(mtf1HD3) ? "—" : str.tostring(mtf1HD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 2, 2, f_stateShortCN(mtf1HState) + "/" + f_phaseCN(mtf1HPhase) + (mtf1HFresh ? "" : "｜过期"), text_color=f_stateColor(mtf1HState), text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 3, 2, na(mtf1HClose) ? "—" : str.format_time(mtf1HClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(2))
+            table.cell(mtfDash, 0, 3, "4H", text_color=is4H ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 1, 3, na(mtf4HD3) ? "—" : str.tostring(mtf4HD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 2, 3, f_stateShortCN(mtf4HState) + "/" + f_phaseCN(mtf4HPhase) + (mtf4HFresh ? "" : "｜过期"), text_color=f_stateColor(mtf4HState), text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 3, 3, na(mtf4HClose) ? "—" : str.format_time(mtf4HClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(3))
+            table.cell(mtfDash, 0, 4, "1D", text_color=is1D ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 1, 4, na(mtf1DD3) ? "—" : str.tostring(mtf1DD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 2, 4, f_stateShortCN(mtf1DState) + "/" + f_phaseCN(mtf1DPhase), text_color=f_stateColor(mtf1DState), text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 3, 4, na(mtf1DClose) ? "—" : str.format_time(mtf1DClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(4))
+            table.cell(mtfDash, 0, 5, "1W", text_color=is1W ? color.yellow : color.white, text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 1, 5, na(mtf1WD3) ? "—" : str.tostring(mtf1WD3, "#.##"), text_color=color.white, text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 2, 5, f_stateShortCN(mtf1WState) + "/" + f_phaseCN(mtf1WPhase), text_color=f_stateColor(mtf1WState), text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 3, 5, na(mtf1WClose) ? "—" : str.format_time(mtf1WClose, "MM-dd HH:mm", "UTC"), text_color=color.silver, text_size=size.tiny, bgcolor=f_rowBg(5))
+            table.cell(mtfDash, 0, 6, "多周期共振", text_color=color.white, text_size=size.tiny, bgcolor=keyBg)
+            table.cell(mtfDash, 1, 6, mtfResonanceText, text_color=mtfBearReversalSync ? color.rgb(255,120,120) : mtfBullReversalSync ? color.rgb(120,255,170) : color.white, text_size=size.tiny, bgcolor=valueBg)

@@ -1,0 +1,510 @@
+//@version=6
+// 多周期强支撑 / 强压力 v3.3（区域层级简化、共振判定修正）
+// 目标：独立识别 30m / 1H / 4H / 1D / 1W 的确认强支撑、强压力；不产生交易买卖建议。
+// v3.2修复：①Pivot反应窗口逐根核对失效，期间若连续确认突破则拒绝这次测试；
+//           ②离区位置使用实际来源K索引，要求离区->再次Pivot的真实时间顺序与最小间隔；
+//           ③每周期传回强结构中心价及实际半宽，价格表显示区间，可选浅色区域；
+//           ④延续v3.1锁存强结构资格/有效期/远距显示保护。
+// v3.3修复：⑤默认仅显示主图与上一级周期的区域（所有有效中心线/价格表仍显示）；
+//           ⑥共振综合中心价与合理宽度的重叠区间；⑦表格结构分不再暗加共振分。
+// 高周期：只读前一根已完成来源 K（[1] + lookahead_on）；同周期：只读收盘快照；
+// 低周期：request.security_lower_tf 获取来源周期内所有可用快照，选最后一根已结束的来源K。
+// 注意：不同数据源及实时数据修订仍可能影响历史/实时一致性；务必在 TradingView 编译和回放验证。
+indicator("多周期强支撑强压力 v3.3", shorttitle="Strong MTF SR 3.3", overlay=true, max_lines_count=20, max_labels_count=20, max_boxes_count=20)
+
+// ── 1. 强结构：所有事件均在来源周期上下文计算 ──
+int leftBars          = input.int(3, "Pivot 左侧K数", minval=1, maxval=20, group="01｜结构筛选")
+int rightBars         = input.int(1, "Pivot 右侧确认K数", minval=1, maxval=10, group="01｜结构筛选")
+int minTests          = input.int(2, "至少独立有效测试", minval=2, maxval=6, group="01｜结构筛选")
+int minTestGap        = input.int(4, "两次Pivot至少相隔K数", minval=2, maxval=100, group="01｜结构筛选")
+int reactionWindow    = input.int(3, "Pivot之后收盘反应观察K数", minval=1, maxval=10, group="01｜结构筛选", tooltip="至少覆盖右侧Pivot确认K数。整个观察窗口必须无有效突破；最早在观察窗口收盘后登记，不读取未来数据。")
+int atrPeriod         = input.int(14, "ATR周期", minval=5, maxval=100, group="01｜结构筛选")
+float minTestReaction = input.float(0.80, "每次测试最低收盘反应(ATR)", minval=0.1, maxval=5.0, step=0.05, group="01｜结构筛选")
+float minAvgReaction  = input.float(1.00, "平均最低收盘反应(ATR)", minval=0.1, maxval=5.0, step=0.05, group="01｜结构筛选")
+float rearmATR        = input.float(0.80, "两次测试间离开区域幅度(ATR)", minval=0.1, maxval=5.0, step=0.1, group="01｜结构筛选")
+float radiusATR       = input.float(0.30, "聚类半宽(ATR)", minval=0.05, maxval=2.0, step=0.05, group="01｜结构筛选")
+float radiusPct       = input.float(0.05, "聚类最小半宽(%)", minval=0.01, maxval=1.0, step=0.01, group="01｜结构筛选")
+float minScore        = input.float(45.0, "首次确认最低结构分(不含共振)", minval=10, maxval=85, step=1, group="01｜结构筛选")
+int poolLimit         = input.int(30, "每侧最多保留候选区域数", minval=5, maxval=80, group="01｜结构筛选")
+
+// ── 2. 按来源周期的有效期：K根数并非统一自然日 ──
+int age30             = input.int(240, "30分钟｜未再次验证最多K数", minval=50, maxval=3000, group="02｜各周期有效期")
+int age60             = input.int(360, "1小时｜未再次验证最多K数", minval=50, maxval=3000, group="02｜各周期有效期")
+int age240            = input.int(360, "4小时｜未再次验证最多K数", minval=50, maxval=3000, group="02｜各周期有效期")
+int ageD              = input.int(365, "日线｜未再次验证最多K数", minval=50, maxval=3000, group="02｜各周期有效期")
+int ageW              = input.int(156, "周线｜未再次验证最多K数", minval=50, maxval=3000, group="02｜各周期有效期")
+
+// ── 3. 失效与显示 ──
+int breakCloses       = input.int(2, "失效：连续收盘突破根数", minval=1, maxval=5, group="03｜结构失效")
+float breakATR        = input.float(0.10, "失效：区域外额外ATR缓冲", minval=0, maxval=2, step=0.05, group="03｜结构失效")
+bool use30            = input.bool(true, "30分钟", group="04｜来源周期")
+bool use60            = input.bool(true, "1小时", group="04｜来源周期")
+bool use240           = input.bool(true, "4小时", group="04｜来源周期")
+bool useD             = input.bool(true, "日线", group="04｜来源周期")
+bool useW             = input.bool(true, "周线", group="04｜来源周期")
+string choose         = input.string("最近强结构", "显示候选", options=["最近强结构", "最强结构"], group="05｜显示")
+bool showLines        = input.bool(true, "显示水平线", group="05｜显示")
+bool showLabels       = input.bool(false, "线尾标签", group="05｜显示")
+bool showBands        = input.bool(true, "浅色显示支撑压力有效区间", group="05｜显示")
+string bandScope       = input.string("主图及上一级周期", "区域着色范围", options=["主图及上一级周期", "仅主图周期", "全部周期", "关闭"], group="05｜显示", tooltip="默认：4H图只给4H与日线的强结构画浅色区域；其他周期仍显示水平线与表格真实区间。不会改变算法中使用的区域宽度或结构失效判断。")
+bool showTable        = input.bool(true, "五周期价格表", group="05｜显示")
+bool showConfluence   = input.bool(true, "提示多周期共振", group="05｜显示")
+float confluencePct   = input.float(0.30, "共振相对价差(%)", minval=0.05, maxval=3.0, step=0.05, group="05｜显示")
+float maxDisplayPct    = input.float(20.0, "画线最大距离现价(%)", minval=1.0, maxval=200.0, step=1.0, group="05｜显示", tooltip="只影响显示；例如周线压力离现价62%，仍记在表格为远距，但不画线。不会降低强结构标准。")
+string panelPosition  = input.string("右上", "价格表位置", options=["右上", "右下", "左上", "左下"], group="05｜显示")
+int lineLength        = input.int(30, "水平线向左长度(主图K)", minval=5, maxval=200, group="05｜显示")
+int barsToLoad        = input.int(5000, "外部来源历史K数上限", minval=1000, maxval=10000, step=500, group="06｜性能")
+bool enableAlerts     = input.bool(false, "启用确认/失效告警", group="07｜告警")
+
+if barstate.isfirst
+    if not chart.is_standard or na(timeframe.in_seconds())
+        runtime.error("请使用标准时间K线图，不支持 Renko / Heikin Ashi 等合成价格。")
+
+// 同一来源周期的候选区域；最后测试记录的是 Pivot 的真实发生bar_index，而不是后续确认bar_index。
+type Zone
+    float price
+    float halfWidth
+    int tests
+    float totalReaction
+    int lastTestBar
+    int firstAwayBar
+    int breaks
+    bool everStrong
+
+f_band(float level, float atrValue) =>
+    math.max(syminfo.mintick * 2.0, math.max(math.abs(level) * radiusPct / 100.0, atrValue * radiusATR))
+
+f_strength(Zone z, int ageLimit) =>
+    // 未加共振最高85：独立测试35 + 收盘反应40 + 新鲜度10。
+    float testPart = math.min(z.tests / 4.0, 1.0) * 35.0
+    float avgReaction = z.totalReaction / math.max(z.tests, 1)
+    float reactionPart = math.min(avgReaction / 2.0, 1.0) * 40.0
+    float ageFraction = math.min(1.0, (bar_index - z.lastTestBar) / float(ageLimit))
+    float freshPart = (1.0 - ageFraction) * 10.0
+    testPart + reactionPart + freshPart
+
+// 达到强结构标准的时刻锁存资格。此后强度可随时间变化，但不因分数衰减而提前取消。
+// 失效只能由突破或ageLimit到期触发，避免默认最低强度分造成早于预设有效期的“消失”。
+f_readyToConfirm(Zone z, int ageLimit) =>
+    z.tests >= minTests and z.totalReaction / math.max(z.tests, 1) >= minAvgReaction and f_strength(z, ageLimit) >= minScore
+
+f_qualified(Zone z, int ageLimit) =>
+    z.everStrong
+
+// 结构维护：只有已发生的来源周期收盘才能记录离区；不因盘中影线更新。
+f_maintain(array<Zone> pool, bool supportSide, float atrValue, int ageLimit) =>
+    bool invalidStrong = false
+    int i = array.size(pool) - 1
+    while i >= 0
+        Zone z = array.get(pool, i)
+        bool away = supportSide ? close > z.price + z.halfWidth + atrValue * rearmATR : close < z.price - z.halfWidth - atrValue * rearmATR
+        if away and na(z.firstAwayBar) and bar_index > z.lastTestBar
+            z.firstAwayBar := bar_index
+        float boundary = z.halfWidth + atrValue * breakATR
+        bool crossed = supportSide ? close < z.price - boundary : close > z.price + boundary
+        z.breaks := crossed ? z.breaks + 1 : 0
+        bool expired = bar_index - z.lastTestBar > ageLimit
+        if z.breaks >= breakCloses
+            invalidStrong := invalidStrong or z.everStrong
+            array.remove(pool, i)
+        else if expired
+            array.remove(pool, i)
+        i -= 1
+    invalidStrong
+
+f_trim(array<Zone> pool, int ageLimit) =>
+    if array.size(pool) > poolLimit
+        int weakestIndex = 0
+        float weakest = na
+        for j = 0 to array.size(pool) - 1
+            Zone z = array.get(pool, j)
+            float quality = f_strength(z, ageLimit) + (f_qualified(z, ageLimit) ? 100.0 : 0.0)
+            if na(weakest) or quality < weakest
+                weakest := quality
+                weakestIndex := j
+        array.remove(pool, weakestIndex)
+
+// 观察一个已确认Pivot之后的逐根来源周期收盘。
+// 顺序严格按时间推进：先判突破，窗口任意时刻确认失效则整次测试无效，
+// 避免“先跌破后反弹”只取窗口最大反应而虚增强度。
+// 第一根后续K的延迟为barsAfter-1，最后一根为0；不会使用Pivot之前的K。
+f_measure(bool supportSide, float pivotLevel, float pivotAtr, int barsAfter) =>
+    float reaction = na
+    int firstAwayBar = na
+    bool intact = false
+    if not na(pivotLevel) and not na(pivotAtr) and pivotAtr > 0
+        float halfWidth = f_band(pivotLevel, pivotAtr)
+        float breachBand = halfWidth + pivotAtr * breakATR
+        float awayBand = halfWidth + pivotAtr * rearmATR
+        int consecutive = 0
+        bool failed = false
+        float bestFavorable = 0.0
+        for step = 1 to barsAfter
+            int lag = barsAfter - step
+            float sampledClose = close[lag]
+            bool breached = supportSide ? sampledClose < pivotLevel - breachBand : sampledClose > pivotLevel + breachBand
+            consecutive := breached ? consecutive + 1 : 0
+            failed := failed or consecutive >= breakCloses
+            float favorable = supportSide ? sampledClose - pivotLevel : pivotLevel - sampledClose
+            bestFavorable := math.max(bestFavorable, favorable)
+            bool movedAway = supportSide ? sampledClose > pivotLevel + awayBand : sampledClose < pivotLevel - awayBand
+            if movedAway and na(firstAwayBar)
+                firstAwayBar := bar_index - lag
+        intact := not failed
+        reaction := intact ? bestFavorable / pivotAtr : na
+        firstAwayBar := intact ? firstAwayBar : na
+    [reaction, intact, firstAwayBar]
+
+// 新的Pivot仅在“窗口无确认失效 + 反应达标”时登记，
+// 其离区时间直接来自真实历史收盘索引，而非登记时刻的推测。
+f_register(array<Zone> pool, bool supportSide, float pivotPrice, float pivotATR, float confirmedReaction, bool intact, int pivotIndex, int observedAwayBar, int ageLimit) =>
+    bool becameStrong = false
+    if intact and not na(pivotPrice) and not na(pivotATR) and pivotATR > 0 and not na(confirmedReaction) and confirmedReaction >= minTestReaction
+        float width = f_band(pivotPrice, pivotATR)
+        int idx = na
+        float bestDistance = na
+        int n = array.size(pool)
+        if n > 0
+            for j = 0 to n - 1
+                Zone z = array.get(pool, j)
+                float distance = math.abs(z.price - pivotPrice)
+                if distance <= math.max(z.halfWidth, width) and (na(bestDistance) or distance < bestDistance)
+                    idx := j
+                    bestDistance := distance
+        if na(idx)
+            array.push(pool, Zone.new(pivotPrice, width, 1, math.min(confirmedReaction, 3.0), pivotIndex, observedAwayBar, 0, false))
+            f_trim(pool, ageLimit)
+        else
+            Zone z = array.get(pool, idx)
+            // 三条件同时满足：两次Pivot相隔足够远；前次后确曾离区；再次Pivot发生在离区之后。
+            // 不使用当前Pivot确认后的离区来补足上一轮测试。
+            bool genuinelyIndependent = pivotIndex - z.lastTestBar >= minTestGap and not na(z.firstAwayBar) and z.firstAwayBar > z.lastTestBar and z.firstAwayBar < pivotIndex
+            if genuinelyIndependent
+                bool previouslyStrong = z.everStrong
+                int nextTests = z.tests + 1
+                float oldCenter = z.price
+                float oldHalfWidth = z.halfWidth
+                float mergedCenter = (oldCenter * z.tests + pivotPrice) / nextTests
+                // 合并后真实区间必须完整覆盖原候选区间及本次测试区间，
+                // 不能简单平均半宽导致有效边界被人为收窄。
+                z.price := mergedCenter
+                z.halfWidth := math.max(math.abs(oldCenter - mergedCenter) + oldHalfWidth, math.abs(pivotPrice - mergedCenter) + width)
+                z.tests := nextTests
+                z.totalReaction += math.min(confirmedReaction, 3.0)
+                z.lastTestBar := pivotIndex
+                z.firstAwayBar := observedAwayBar
+                z.breaks := 0
+                becameStrong := not previouslyStrong and f_readyToConfirm(z, ageLimit)
+                z.everStrong := z.everStrong or becameStrong
+    becameStrong
+
+f_select(array<Zone> pool, bool supportSide, int ageLimit) =>
+    float nearPrice = na
+    float nearScore = na
+    float nearWidth = na
+    float bestPrice = na
+    float bestScore = na
+    float bestWidth = na
+    int n = array.size(pool)
+    if n > 0
+        for j = 0 to n - 1
+            Zone z = array.get(pool, j)
+            if f_qualified(z, ageLimit)
+                bool correctSide = supportSide ? z.price < close : z.price > close
+                if correctSide
+                    float sc = f_strength(z, ageLimit)
+                    if na(nearPrice) or (supportSide ? z.price > nearPrice : z.price < nearPrice)
+                        nearPrice := z.price
+                        nearScore := sc
+                        nearWidth := z.halfWidth
+                    if na(bestScore) or sc > bestScore or (sc == bestScore and (supportSide ? z.price > bestPrice : z.price < bestPrice))
+                        bestPrice := z.price
+                        bestScore := sc
+                        bestWidth := z.halfWidth
+    [nearPrice, nearScore, nearWidth, bestPrice, bestScore, bestWidth]
+
+// 全部状态与计算都发生在【来源】周期，每个周期单独的 var 候选池。
+f_engine(int ageLimit) =>
+    float atr = ta.atr(atrPeriod)
+    float pivotLow = ta.pivotlow(low, leftBars, rightBars)
+    float pivotHigh = ta.pivothigh(high, leftBars, rightBars)
+    // 在来源周期中等待足够多的已收盘K后，再回看已经确认的Pivot。
+    // delayK根前刚被确认的Pivot，本轮被登记时已积累reactionBars根后续收盘。
+    int reactionBars = math.max(rightBars, reactionWindow)
+    int delayK = reactionBars - rightBars
+    float checkedPivotLow = pivotLow[delayK]
+    float checkedPivotHigh = pivotHigh[delayK]
+    float pivotATR = atr[reactionBars]
+    [sReaction, sIntact, sAwayBar] = f_measure(true, checkedPivotLow, pivotATR, reactionBars)
+    [rReaction, rIntact, rAwayBar] = f_measure(false, checkedPivotHigh, pivotATR, reactionBars)
+    var array<Zone> supportPool = array.new<Zone>()
+    var array<Zone> resistancePool = array.new<Zone>()
+    var int newStrongCount = 0
+    var int invalidCount = 0
+    if not na(atr)
+        bool invalidS = f_maintain(supportPool, true, atr, ageLimit)
+        bool invalidR = f_maintain(resistancePool, false, atr, ageLimit)
+        if invalidS
+            invalidCount += 1
+        if invalidR
+            invalidCount += 1
+        bool strongS = f_register(supportPool, true, checkedPivotLow, pivotATR, sReaction, sIntact, bar_index - reactionBars, sAwayBar, ageLimit)
+        bool strongR = f_register(resistancePool, false, checkedPivotHigh, pivotATR, rReaction, rIntact, bar_index - reactionBars, rAwayBar, ageLimit)
+        if strongS
+            newStrongCount += 1
+        if strongR
+            newStrongCount += 1
+    [ns, nss, nsw, bs, bss, bsw] = f_select(supportPool, true, ageLimit)
+    [nr, nrs, nrw, br, brs, brw] = f_select(resistancePool, false, ageLimit)
+    [ns, nss, nsw, bs, bss, bsw, nr, nrs, nrw, br, brs, brw, time_close, newStrongCount, invalidCount]
+
+f_prevEngine(int ageLimit) =>
+    [ns,nss,nsw,bs,bss,bsw,nr,nrs,nrw,br,brs,brw,t,ne,ie] = f_engine(ageLimit)
+    [ns[1],nss[1],nsw[1],bs[1],bss[1],bsw[1],nr[1],nrs[1],nrw[1],br[1],brs[1],brw[1],t[1],ne[1],ie[1]]
+
+// 同一根主图K内可以收到多根已结束的低周期K。
+// 本根主图K尚无已收盘低周期K时延续前一主图快照，避免无故闪空。
+f_tf(simple string tf, simple bool enabled, simple int ageLimit) =>
+    float ns = na
+    float nss = na
+    float nsw = na
+    float bs = na
+    float bss = na
+    float bsw = na
+    float nr = na
+    float nrs = na
+    float nrw = na
+    float br = na
+    float brs = na
+    float brw = na
+    int ct = na
+    int ne = na
+    int ie = na
+    if enabled
+        int sourceSec = timeframe.in_seconds(tf)
+        int chartSec = timeframe.in_seconds()
+        if sourceSec > chartSec
+            [a,b,c,d,e,f,g,h,i,j,k,l,t,u,v] = request.security(syminfo.tickerid,tf,f_prevEngine(ageLimit),lookahead=barmerge.lookahead_on,gaps=barmerge.gaps_off,calc_bars_count=barsToLoad)
+            ns := a
+            nss := b
+            nsw := c
+            bs := d
+            bss := e
+            bsw := f
+            nr := g
+            nrs := h
+            nrw := i
+            br := j
+            brs := k
+            brw := l
+            ct := t
+            ne := u
+            ie := v
+        else if sourceSec == chartSec
+            [a,b,c,d,e,f,g,h,i,j,k,l,t,u,v] = f_engine(ageLimit)
+            ns := barstate.isconfirmed ? a : a[1]
+            nss := barstate.isconfirmed ? b : b[1]
+            nsw := barstate.isconfirmed ? c : c[1]
+            bs := barstate.isconfirmed ? d : d[1]
+            bss := barstate.isconfirmed ? e : e[1]
+            bsw := barstate.isconfirmed ? f : f[1]
+            nr := barstate.isconfirmed ? g : g[1]
+            nrs := barstate.isconfirmed ? h : h[1]
+            nrw := barstate.isconfirmed ? i : i[1]
+            br := barstate.isconfirmed ? j : j[1]
+            brs := barstate.isconfirmed ? k : k[1]
+            brw := barstate.isconfirmed ? l : l[1]
+            ct := barstate.isconfirmed ? t : t[1]
+            ne := barstate.isconfirmed ? u : u[1]
+            ie := barstate.isconfirmed ? v : v[1]
+        else
+            [aa,bb,cc,dd,ee,ff,gg,hh,ii,jj,kk,ll,tt,uu,vv] = request.security_lower_tf(syminfo.tickerid,tf,f_engine(ageLimit),calc_bars_count=barsToLoad)
+            int k = array.size(tt) - 1
+            while k >= 0
+                int closedAt = array.get(tt,k)
+                if not na(closedAt) and closedAt <= timenow
+                    ns := array.get(aa,k)
+                    nss := array.get(bb,k)
+                    nsw := array.get(cc,k)
+                    bs := array.get(dd,k)
+                    bss := array.get(ee,k)
+                    bsw := array.get(ff,k)
+                    nr := array.get(gg,k)
+                    nrs := array.get(hh,k)
+                    nrw := array.get(ii,k)
+                    br := array.get(jj,k)
+                    brs := array.get(kk,k)
+                    brw := array.get(ll,k)
+                    ct := closedAt
+                    ne := array.get(uu,k)
+                    ie := array.get(vv,k)
+                    break
+                k -= 1
+            // ct为na只表示本根主图K内未找到已完成的来源K；已完成但无合格强结构则必须保留na。
+            bool noCompletedIntrabar = na(ct)
+            ns := noCompletedIntrabar ? ns[1] : ns
+            nss := noCompletedIntrabar ? nss[1] : nss
+            nsw := noCompletedIntrabar ? nsw[1] : nsw
+            bs := noCompletedIntrabar ? bs[1] : bs
+            bss := noCompletedIntrabar ? bss[1] : bss
+            bsw := noCompletedIntrabar ? bsw[1] : bsw
+            nr := noCompletedIntrabar ? nr[1] : nr
+            nrs := noCompletedIntrabar ? nrs[1] : nrs
+            nrw := noCompletedIntrabar ? nrw[1] : nrw
+            br := noCompletedIntrabar ? br[1] : br
+            brs := noCompletedIntrabar ? brs[1] : brs
+            brw := noCompletedIntrabar ? brw[1] : brw
+            ct := noCompletedIntrabar ? ct[1] : ct
+            ne := noCompletedIntrabar ? ne[1] : ne
+            ie := noCompletedIntrabar ? ie[1] : ie
+    [ns,nss,nsw,bs,bss,bsw,nr,nrs,nrw,br,brs,brw,ct,ne,ie]
+
+// ── 4. 每周期的中心价/结构分/半宽均来自同一来源快照 ──
+[a30,b30,w30,c30,d30,x30,e30,f30,y30,g30,h30,z30,t30,new30,bad30] = f_tf("30",use30,age30)
+[a60,b60,w60,c60,d60,x60,e60,f60,y60,g60,h60,z60,t60,new60,bad60] = f_tf("60",use60,age60)
+[a240,b240,w240,c240,d240,x240,e240,f240,y240,g240,h240,z240,t240,new240,bad240] = f_tf("240",use240,age240)
+[aD,bD,wD,cD,dD,xD,eD,fD,yD,gD,hD,zD,tD,newD,badD] = f_tf("D",useD,ageD)
+[aW,bW,wW,cW,dW,xW,eW,fW,yW,gW,hW,zW,tW,newW,badW] = f_tf("W",useW,ageW)
+
+bool useNearest = choose == "最近强结构"
+array<float> supportPrices = array.from(useNearest?a30:c30,useNearest?a60:c60,useNearest?a240:c240,useNearest?aD:cD,useNearest?aW:cW)
+array<float> resistancePrices = array.from(useNearest?e30:g30,useNearest?e60:g60,useNearest?e240:g240,useNearest?eD:gD,useNearest?eW:gW)
+array<float> supportScores = array.from(useNearest?b30:d30,useNearest?b60:d60,useNearest?b240:d240,useNearest?bD:dD,useNearest?bW:dW)
+array<float> resistanceScores = array.from(useNearest?f30:h30,useNearest?f60:h60,useNearest?f240:h240,useNearest?fD:hD,useNearest?fW:hW)
+array<float> supportWidths = array.from(useNearest?w30:x30,useNearest?w60:x60,useNearest?w240:x240,useNearest?wD:xD,useNearest?wW:xW)
+array<float> resistanceWidths = array.from(useNearest?y30:z30,useNearest?y60:z60,useNearest?y240:z240,useNearest?yD:zD,useNearest?yW:zW)
+array<int> sourceTimes = array.from(t30,t60,t240,tD,tW)
+array<bool> sourceEnabled = array.from(use30,use60,use240,useD,useW)
+array<string> sourceNames = array.from("30m","1H","4H","1D","1W")
+array<color> sourceColors = array.from(color.aqua,color.rgb(67,133,245),color.orange,color.rgb(165,105,235),color.fuchsia)
+
+f_confluence(array<float> levels, array<float> widths, array<bool> enabled, int idx) =>
+    int n = 0
+    float ref = array.get(levels, idx)
+    float refWidth = array.get(widths, idx)
+    if showConfluence and not na(ref) and not na(refWidth)
+        for j = 0 to 4
+            if j != idx and array.get(enabled,j)
+                float peer = array.get(levels, j)
+                float peerWidth = array.get(widths, j)
+                if not na(peer) and not na(peerWidth)
+                    // 两种共振：中心价接近；或者合理宽度的两区间有大比例重合。
+                    // 超宽周线区间即使覆盖短周期，也不直接算作短周期共振。
+                    float centerDiffPct = math.abs(peer-ref) / math.max(math.abs(ref), syminfo.mintick) * 100.0
+                    float refSpan = 2.0 * refWidth
+                    float peerSpan = 2.0 * peerWidth
+                    float overlap = math.max(0.0, math.min(ref+refWidth,peer+peerWidth) - math.max(ref-refWidth,peer-peerWidth))
+                    float narrowSpan = math.max(math.min(refSpan,peerSpan),syminfo.mintick)
+                    float overlapRatio = overlap / narrowSpan
+                    float widthRatio = math.max(refSpan,peerSpan) / narrowSpan
+                    bool centersNear = centerDiffPct <= confluencePct
+                    bool zonesConverge = overlapRatio >= 0.60 and widthRatio <= 4.0 and centerDiffPct <= 1.0
+                    if centersNear or zonesConverge
+                        n += 1
+    n
+
+f_price(float price) =>
+    na(price) ? "—" : str.tostring(price,format.mintick)
+
+f_range(float center, float halfWidth) =>
+    na(center) or na(halfWidth) ? "—" : f_price(center - halfWidth) + "–" + f_price(center + halfWidth)
+
+f_cell(float price, float score, float halfWidth, int companions) =>
+    if na(price) or na(score) or na(halfWidth)
+        "—"
+    else
+        int shown = int(math.round(math.min(100.0, score)))
+        f_price(price) + " [" + str.tostring(shown) + (companions > 0 ? " · 共" + str.tostring(companions+1) : "") + "]\n" + f_range(price,halfWidth)
+
+// ── 5. 每周期最多两条结构线；浅色区间只强调与主图最相关的周期 ──
+// 当主图不是5个固定周期时，选取第一个不低于主图的目标周期作为“主图周期”。
+int chartSecDisplay = timeframe.in_seconds()
+array<int> sourceSeconds = array.from(timeframe.in_seconds("30"), timeframe.in_seconds("60"), timeframe.in_seconds("240"), timeframe.in_seconds("D"), timeframe.in_seconds("W"))
+int bandBaseIndex = 4
+for k = 0 to 4
+    if array.get(sourceSeconds, k) >= chartSecDisplay
+        bandBaseIndex := k
+        break
+
+var array<line> drawnLines = array.new<line>(10,na)
+var array<box> drawnBands = array.new<box>(10,na)
+var array<label> drawnLabels = array.new<label>(10,na)
+if barstate.islast
+    for k = 0 to 4
+        color c = array.get(sourceColors,k)
+        bool active = array.get(sourceEnabled,k)
+        for side = 0 to 1
+            int i = k*2+side
+            line oldLine = array.get(drawnLines,i)
+            box oldBand = array.get(drawnBands,i)
+            label oldLabel = array.get(drawnLabels,i)
+            if not na(oldLine)
+                line.delete(oldLine)
+                array.set(drawnLines,i,na)
+            if not na(oldBand)
+                box.delete(oldBand)
+                array.set(drawnBands,i,na)
+            if not na(oldLabel)
+                label.delete(oldLabel)
+                array.set(drawnLabels,i,na)
+            float level = side == 0 ? array.get(supportPrices,k) : array.get(resistancePrices,k)
+            float width = side == 0 ? array.get(supportWidths,k) : array.get(resistanceWidths,k)
+            bool correctSide = not na(level) and (side==0 ? level < close : level > close)
+            bool withinRange = not na(level) and math.abs(level-close)/math.max(math.abs(close),syminfo.mintick)*100.0 <= maxDisplayPct
+            if showLines and active and correctSide and withinRange and not na(width)
+                bool bandAllowed = bandScope == "全部周期" or (bandScope == "仅主图周期" and k == bandBaseIndex) or (bandScope == "主图及上一级周期" and (k == bandBaseIndex or k == math.min(bandBaseIndex+1,4)))
+                if showBands and bandAllowed and bandScope != "关闭"
+                    box area = box.new(left=math.max(bar_index-lineLength,0),top=level+width,right=bar_index+2,bottom=level-width,xloc=xloc.bar_index,extend=extend.right,border_color=color.new(c,90),border_width=1,bgcolor=color.new(c,92))
+                    array.set(drawnBands,i,area)
+                line ln = line.new(math.max(bar_index-lineLength,0),level,bar_index+2,level,xloc=xloc.bar_index,extend=extend.right,color=c,width=side==0 ? 2 : 1,style=side==0 ? line.style_solid : line.style_dashed)
+                array.set(drawnLines,i,ln)
+                if showLabels
+                    string txt = array.get(sourceNames,k) + (side==0 ? " 强支 " : " 强压 ") + f_price(level) + "\n" + f_range(level,width)
+                    label lb = label.new(bar_index+3+k*3,level,txt,xloc=xloc.bar_index,style=label.style_label_left,color=color.new(c,25),textcolor=color.white,size=size.tiny)
+                    array.set(drawnLabels,i,lb)
+
+// ── 6. 价格表：每个格子首行代表价/结构分，次行区域上下边界 ──
+string tablePos = switch panelPosition
+    "左上" => position.top_left
+    "左下" => position.bottom_left
+    "右下" => position.bottom_right
+    => position.top_right
+var table panel = table.new(tablePos,4,6,border_width=1,border_color=color.new(color.gray,65))
+if barstate.islast
+    if showTable
+        color bgHead = color.rgb(27,31,40)
+        table.cell(panel,0,0,"周期",bgcolor=bgHead,text_color=color.white,text_size=size.tiny)
+        table.cell(panel,1,0,"强支撑 / 有效区间",bgcolor=bgHead,text_color=color.white,text_size=size.tiny)
+        table.cell(panel,2,0,"强压力 / 有效区间",bgcolor=bgHead,text_color=color.white,text_size=size.tiny)
+        table.cell(panel,3,0,"来源确认",bgcolor=bgHead,text_color=color.white,text_size=size.tiny)
+        for k=0 to 4
+            bool active = array.get(sourceEnabled,k)
+            float s = array.get(supportPrices,k)
+            float r = array.get(resistancePrices,k)
+            float ss = array.get(supportScores,k)
+            float rs = array.get(resistanceScores,k)
+            float sw = array.get(supportWidths,k)
+            float rw = array.get(resistanceWidths,k)
+            int conS = f_confluence(supportPrices,supportWidths,sourceEnabled,k)
+            int conR = f_confluence(resistancePrices,resistanceWidths,sourceEnabled,k)
+            int whenUpdated = array.get(sourceTimes,k)
+            bool farS = not na(s) and math.abs(s-close)/math.max(math.abs(close),syminfo.mintick)*100.0 > maxDisplayPct
+            bool farR = not na(r) and math.abs(r-close)/math.max(math.abs(close),syminfo.mintick)*100.0 > maxDisplayPct
+            string sTxt = not active ? "关闭" : na(whenUpdated) ? "缺数据" : na(s) ? "待确认" : s >= close ? "待确认方向" : farS ? "远距 " + f_price(s) + "\n" + f_range(s,sw) : f_cell(s,ss,sw,conS)
+            string rTxt = not active ? "关闭" : na(whenUpdated) ? "缺数据" : na(r) ? "待确认" : r <= close ? "待确认方向" : farR ? "远距 " + f_price(r) + "\n" + f_range(r,rw) : f_cell(r,rs,rw,conR)
+            string timeTxt = active and not na(whenUpdated) ? str.format_time(whenUpdated,"MM-dd HH:mm","Asia/Shanghai") : "—"
+            color rowBg = active ? bgHead : color.new(color.gray,85)
+            table.cell(panel,0,k+1,array.get(sourceNames,k),bgcolor=rowBg,text_color=active ? array.get(sourceColors,k) : color.gray,text_size=size.tiny)
+            table.cell(panel,1,k+1,sTxt,bgcolor=rowBg,text_color=color.white,text_size=size.tiny)
+            table.cell(panel,2,k+1,rTxt,bgcolor=rowBg,text_color=color.white,text_size=size.tiny)
+            table.cell(panel,3,k+1,timeTxt,bgcolor=rowBg,text_color=color.silver,text_size=size.tiny)
+    else
+        table.clear(panel,0,0,3,5)
+
+// ── 7. 可选告警：来源周期各自累计事件数；提醒不等于建议交易 ──
+f_advanced(int value) =>
+    not na(value) and not na(value[1]) and value > value[1]
+bool confirmedStrong = (use30 and f_advanced(new30)) or (use60 and f_advanced(new60)) or (use240 and f_advanced(new240)) or (useD and f_advanced(newD)) or (useW and f_advanced(newW))
+bool confirmedInvalid = (use30 and f_advanced(bad30)) or (use60 and f_advanced(bad60)) or (use240 and f_advanced(bad240)) or (useD and f_advanced(badD)) or (useW and f_advanced(badW))
+alertcondition(enableAlerts and confirmedStrong,"新强支撑/强压力确认","有来源周期新确认合格的强支撑或强压力，请检查五周期价格表。")
+alertcondition(enableAlerts and confirmedInvalid,"强结构确认失效","有来源周期的已确认强支撑或强压力被正式突破并失效。")
