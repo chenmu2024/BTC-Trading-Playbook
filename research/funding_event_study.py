@@ -121,13 +121,15 @@ def no_overlap(events):
     return selected
 
 
-def event_study(data, fee_per_side=0.0006, slippage_per_side=0.0002):
+def event_study(data, fee_per_side=0.0006, slippage_per_side=0.0002, *, start_ms=None, test_start_ms=None):
     bars, funds = validate(data)
+    start_ms = START if start_ms is None else start_ms
+    test_start_ms = TEST_START if test_start_ms is None else test_start_ms
     first_open = bars[0][0]
     groups = {h: {split: {key: [] for key in COHORTS} for split in ("train", "test")}
               for h in HORIZONS}
     for i, (event_time, rate) in enumerate(funds):
-        if event_time < START:
+        if event_time < start_ms:
             continue
         # Last fully CLOSED candle known at settlement time. 1h delay before entry.
         last = (event_time - first_open) // HOUR - 1
@@ -136,7 +138,7 @@ def event_study(data, fee_per_side=0.0006, slippage_per_side=0.0002):
             continue
         if bars[entry_index][0] <= event_time:
             raise ValueError("Entry would precede observed funding settlement")
-        split = "train" if event_time < TEST_START else "test"
+        split = "train" if event_time < test_start_ms else "test"
         near_low = support_proxy(bars, int(last))
         bms = sweep_bms_proxy(bars, int(last))
         negative_3 = (i >= 2 and all(funds[k][1] < 0 for k in range(i-2, i+1)))
@@ -181,7 +183,7 @@ def event_study(data, fee_per_side=0.0006, slippage_per_side=0.0002):
                 negative_settlements=sum(r < 0 for _, r in funds),
                 candle_window=[iso(bars[0][0]), iso(bars[-1][0])],
                 funding_window=[iso(funds[0][0]), iso(funds[-1][0])],
-                study_start=iso(int(START)), split_test_start=iso(int(TEST_START)),
+                study_start=iso(int(start_ms)), split_test_start=iso(int(test_start_ms)),
                 horizon_hours=list(HORIZONS), fee_per_side=fee_per_side,
                 slippage_per_side=slippage_per_side,
                 monthly_funding_counts=dict(months), results=summary,
