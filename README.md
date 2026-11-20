@@ -43,3 +43,10 @@
 - GitHub 页面操作：打开 **Actions → BTC market snapshot (manual, research only) → Run workflow**，运行结束下载 artifacts 中的报告，无需本地电脑、交易API密钥或付费行情服务。GitHub Actions资源额度和交易所网络访问以实际平台为准。
 - 运行状态与限制见 [docs/ENGINE_USAGE.md](docs/ENGINE_USAGE.md)；此引擎仅有 **EMA/前高前低/扫盘代理/合约K线Delta与OI/费率**。并未复刻v3.3/Eric/V1.1完整信号。不要把代理读数当成原指标。
 - 离线自动测试在每次push运行： [Actions](https://github.com/chenmu2024/BTC-Trading-Playbook/actions)；仅编译和单元测试通过不能证明策略盈利或原Pine一致。
+
+## 负资金费率历史研究（已执行，2026-11-21）
+- **最新结果与局限**：[2026-11-21 负费率事件研究](research/RESULTS_2026-11-21.md)。
+- **研究代码**：[research/funding_event_study.py](research/funding_event_study.py)；**冻结公开数据**：[research/data](research/data)。
+- 复算：`python -m research.funding_event_study --data research/data/binance_btcusdt_2026-05-01_to_2026-11-20.json --output-dir output/study`。
+- CI使用固定快照对全部研究结果做回归校验，提供 JSON/Markdown 报告 Artifact，不依赖实时 API。
+- **研究发现**：负资金费率单独作为BTC做多条件，在本次2026年5—11月样本中未展示可靠正期望；结构过滤事件过少，不能宣称组合盈利。资金费率仍保留为高优先级**观察指标**，不是买入信号。
