@@ -12,3 +12,8 @@
 - 新增Markdown和JSON报告、原始快照归档、离线单元测试与GitHub CI。
 - 新增可手动运行的GitHub Actions行情研究（不自动提交、交易或定时监控）。
 - 所有v3.3、Eric、V1.1的Pine逐K一致性状态仍为UNKNOWN；持续使用WAIT而不是买卖信号。
+
+## 2026-11-21 — Funding Contrarian Watch V0.3
+- 将负资金费率提升为高优先级独立观察层，不允许仅凭费率开多。
+- 新增历史结算费率分析、频率归一化、连续负费率、极端分位及回归测试。
+- 已保存的Pine指标源码未修改，策略维持research_only且不自动下单。

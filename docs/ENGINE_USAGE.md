@@ -43,3 +43,8 @@ python -m engine.cli --snapshot-file path/to/snapshot.json --output-dir output
 - 对 Binance 各时间框架检查K线开盘时间是否严格相邻；发现缺K线会拒绝对应时间框架。
 - 最新已收盘K线过旧（超过两个来源周期）时标记该周期数据错误；日线/4H/1H不能满足要求则决策为DATA_INSUFFICIENT。
 - 离线历史快照用于事后复核，不代表实时行情；离线模式不采用当前时间去否定历史日期。
+
+## 负资金费率模块 0.3
+引擎读取最多1000条已结算Binance USDⓈ-M Funding历史并判断观察状态。跨频率采用与上一结算间隔有关的**线性8小时等效折算**，仅供跨期比较，不代表复利或真实费用收益。
+`NEGATIVE_WATCH`=首次或不足3期负值；`PERSISTENT_NEGATIVE_WATCH`=至少3期连续负值；`DEEP_NEGATIVE_WATCH`=同时处于可用历史最低10%分位（需至少60个有效样本）。
+此模块无自动买入指令；当历史数据不足/过期时输出UNKNOWN/STALE。结算间隔若频繁缩短，1000条数据可能覆盖不到90天，报告必须列起始日期与样本数量。
