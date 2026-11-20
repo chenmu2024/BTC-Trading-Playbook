@@ -121,7 +121,7 @@ def no_overlap(events):
     return selected
 
 
-def event_study(data, fee_per_side=0.0006, slippage_per_side=0.0002, *, start_ms=None, test_start_ms=None):
+def event_study(data, fee_per_side=0.0006, slippage_per_side=0.0002, *, start_ms=None, test_start_ms=None, strict_split_end=False):
     bars, funds = validate(data)
     start_ms = START if start_ms is None else start_ms
     test_start_ms = TEST_START if test_start_ms is None else test_start_ms
@@ -143,6 +143,8 @@ def event_study(data, fee_per_side=0.0006, slippage_per_side=0.0002, *, start_ms
         bms = sweep_bms_proxy(bars, int(last))
         negative_3 = (i >= 2 and all(funds[k][1] < 0 for k in range(i-2, i+1)))
         for h in HORIZONS:
+            if strict_split_end and split == "train" and entry_index + h < len(bars) and bars[entry_index + h][0] >= test_start_ms:
+                continue
             outcome = costed_long(bars, funds, entry_index, h, fee_per_side, slippage_per_side)
             if outcome is None:
                 continue
