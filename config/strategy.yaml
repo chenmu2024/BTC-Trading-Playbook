@@ -39,6 +39,16 @@ flow:
   funding_required_to_analyze: false
   all_indicators_must_align: false
   absent_data_means_unknown: true
+funding_research:
+  enabled: true
+  mode: contrarian_watch_only
+  lookback_days: 90
+  min_samples: 60
+  consecutive_negative: 3
+  extreme_percentile: 0.10
+  base_reference_hours: 8
+  negative_funding_is_entry_signal: false
+  empirical_edge_verified: false
 risk:
   trend_trade_max_equity_fraction: 0.005
   countertrend_max_equity_fraction: 0.0025
