@@ -38,3 +38,8 @@ python -m engine.cli --snapshot-file path/to/snapshot.json --output-dir output
 2. 从TradingView逐K导出Eric/强区指标信号，建立对照fixture，确认高周期/低周期时序及Pivot延迟。
 3. 外部引擎逐K复刻并跑一致性测试，才能升级UNKNOWN为VERIFIED。
 4. 保持参数冻结，按时点记录真实分析输出，随后进行样本外统计，不利用未来数据挑结果。
+
+## 采集完整性检查（2026-11-21）
+- 对 Binance 各时间框架检查K线开盘时间是否严格相邻；发现缺K线会拒绝对应时间框架。
+- 最新已收盘K线过旧（超过两个来源周期）时标记该周期数据错误；日线/4H/1H不能满足要求则决策为DATA_INSUFFICIENT。
+- 离线历史快照用于事后复核，不代表实时行情；离线模式不采用当前时间去否定历史日期。

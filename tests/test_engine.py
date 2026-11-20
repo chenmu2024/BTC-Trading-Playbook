@@ -30,6 +30,12 @@ class PublicDataTests(unittest.TestCase):
         self.assertEqual(len(parse_klines([row(0),row(1000)], 1100)), 1)
         self.assertEqual(parse_klines([row(0),row(1000)], 1100)[0]["close_time_ms"],999)
 
+    def test_gap_between_candles_rejected(self):
+        def row(t):
+            return [t,"100","110","90","100","20",t+999,"0",1,"8","0","0"]
+        with self.assertRaisesRegex(ValueError, "Missing Kline interval"):
+            parse_klines([row(0),row(2000)], 10000, expected_interval_ms=1000)
+
     def test_duplicate_rejected(self):
         row=[0,"100","110","90","100","20",999,"0",1,"8","0"]
         with self.assertRaises(ValueError):

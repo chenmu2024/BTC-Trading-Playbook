@@ -18,3 +18,6 @@ private/
 local-reports/
 data/raw/
 reports/private/
+
+# Generated reports and raw public market snapshots: local-only unless explicitly archived
+output/

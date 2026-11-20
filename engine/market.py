@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 BASE = "https://fapi.binance.com"
 FUTURES_DATA = "https://fapi.binance.com"
 INTERVALS = ("1w", "1d", "4h", "1h", "30m")
+INTERVAL_MS = {"1w": 604800000, "1d": 86400000, "4h": 14400000, "1h": 3600000, "30m": 1800000}
 
 
 def utc_ms() -> int:
@@ -40,7 +41,7 @@ def get_json(path: str, params: dict, base: str = BASE, timeout: int = 15):
     return data
 
 
-def parse_klines(rows: list, now_ms: int) -> list[dict]:
+def parse_klines(rows: list, now_ms: int, expected_interval_ms: int | None = None) -> list[dict]:
     """Ignore any unsettled bar; enforce chronological, unique close times."""
     result = []
     previous_open = -1
@@ -50,6 +51,8 @@ def parse_klines(rows: list, now_ms: int) -> list[dict]:
         opened, closed = int(r[0]), int(r[6])
         if opened <= previous_open or closed < opened:
             raise ValueError("Klines out of chronological order or duplicated")
+        if expected_interval_ms is not None and previous_open >= 0 and opened - previous_open != expected_interval_ms:
+            raise ValueError("Missing Kline interval or unexpected spacing")
         previous_open = opened
         if closed >= now_ms:
             continue
@@ -78,7 +81,10 @@ def fetch_snapshot(symbol: str = "BTCUSDT", now_ms: int | None = None) -> dict:
     for interval in INTERVALS:
         try:
             rows = get_json("/fapi/v1/klines", dict(symbol=symbol, interval=interval, limit=260))
-            snapshot["klines"][interval] = parse_klines(rows, now)
+            closed = parse_klines(rows, now, expected_interval_ms=INTERVAL_MS[interval])
+            if not closed or now - closed[-1]["close_time_ms"] > 2 * INTERVAL_MS[interval] + 1000:
+                raise ValueError("Missing or stale most recent closed Kline")
+            snapshot["klines"][interval] = closed
         except (RuntimeError, ValueError) as exc:
             snapshot["errors"][f"klines_{interval}"] = str(exc)
     try:
