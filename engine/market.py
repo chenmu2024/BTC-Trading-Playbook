@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from .funding import funding_regime
 
 BASE = "https://fapi.binance.com"
 FUTURES_DATA = "https://fapi.binance.com"
@@ -77,7 +78,7 @@ def fetch_snapshot(symbol: str = "BTCUSDT", now_ms: int | None = None) -> dict:
         raise ValueError("Research profile currently restricted to BTCUSDT")
     snapshot = dict(exchange="Binance", market="USD-M_PERPETUAL", symbol=symbol,
                     fetched_at_utc=iso_ms(now), source_base=BASE,
-                    klines={}, oi=None, funding=None, errors={})
+                    klines={}, oi=None, funding=None, funding_history=None, errors={})
     for interval in INTERVALS:
         try:
             rows = get_json("/fapi/v1/klines", dict(symbol=symbol, interval=interval, limit=260))
@@ -96,10 +97,11 @@ def fetch_snapshot(symbol: str = "BTCUSDT", now_ms: int | None = None) -> dict:
     except (RuntimeError, ValueError, KeyError, TypeError) as exc:
         snapshot["errors"]["oi"] = str(exc)
     try:
-        rates = get_json("/fapi/v1/fundingRate", dict(symbol=symbol, limit=3))
+        rates = get_json("/fapi/v1/fundingRate", dict(symbol=symbol, limit=1000))
         if not isinstance(rates, list):
             raise ValueError("Funding history invalid")
         eligible = [x for x in rates if int(x["fundingTime"]) <= now]
+        snapshot["funding_history"] = eligible
         snapshot["funding"] = eligible[-1] if eligible else None
     except (RuntimeError, ValueError, KeyError, TypeError) as exc:
         snapshot["errors"]["funding"] = str(exc)
@@ -229,6 +231,13 @@ def analyze(snapshot: dict, config: dict, repo_commit: str = "unknown") -> dict:
     candidates = sweep_candidates(frames.get("1h", []), lkb, cbars, vol)
     delta = delta_summary(frames.get("1h", []))
     derivatives_result = derivatives(snapshot)
+    fp = config.get("funding_research", {})
+    funding_r = funding_regime(snapshot.get("funding_history"),
+        int(datetime.fromisoformat(snapshot["fetched_at_utc"]).timestamp()*1000),
+        lookback_days=int(fp.get("lookback_days",90)),
+        min_samples=int(fp.get("min_samples",60)),
+        extreme_percentile=float(fp.get("extreme_percentile",0.10)),
+        streak_required=int(fp.get("consecutive_negative",3)))
     mandatory = ("1d", "4h", "1h")
     complete = all(summaries[tf]["status"] != "DATA_INSUFFICIENT" for tf in mandatory)
     if not complete:
@@ -238,12 +247,13 @@ def analyze(snapshot: dict, config: dict, repo_commit: str = "unknown") -> dict:
     bias = ("BEAR" if summaries["1d"]["status"] == summaries["4h"]["status"] == "BEAR"
             else "BULL" if summaries["1d"]["status"] == summaries["4h"]["status"] == "BULL"
             else "MIXED_OR_NEUTRAL")
-    return dict(engine="public-data-proxy-0.2", repo_commit=repo_commit,
+    return dict(engine="public-data-proxy-0.3", repo_commit=repo_commit,
                 exchange=snapshot.get("exchange"), market=snapshot.get("market"),
                 symbol=snapshot.get("symbol"), fetched_at_utc=snapshot.get("fetched_at_utc"),
                 data_errors=snapshot.get("errors", {}), decision=state, directional_context=bias,
                 trends=summaries, areas=areas, sweep_observations=candidates,
                 candle_taker_delta=delta, derivatives=derivatives_result,
+                funding_regime=funding_r,
                 pine_parity={"strong_support_resistance_v3_3":"UNKNOWN",
                              "eric_swing_v1_9_10":"UNKNOWN",
                              "liquidity_sweep_v1_1":"UNKNOWN"},
@@ -277,6 +287,13 @@ def markdown_report(r: dict) -> str:
               f"- K线主动成交量差：{d.get('status')}, 最近1H={d.get('last_1h_delta_btc','?')} BTC，24H净值={d.get('last_24h_net_delta_btc','?')} BTC（不是逐笔CVD）。"]
     for key in ("oi", "funding"):
         lines.append(f"- {key.upper()}: {json.dumps(r['derivatives'][key], ensure_ascii=False)}")
+    fr = r.get("funding_regime", {})
+    lines += ["", "## 资金费率逆向观察（研究）",
+              f"- 状态：{fr.get('status', 'UNKNOWN')} / {fr.get('regime', 'UNKNOWN')}",
+              f"- 最近结算：{fr.get('last_funding_time_utc', 'UNKNOWN')}，费率：{fr.get('last_rate_percent', 'UNKNOWN')}%",
+              f"- 8h等效：{fr.get('last_8h_equivalent_percent', 'UNKNOWN')}%；连续负费率：{fr.get('negative_streak', 'UNKNOWN')}次",
+              f"- 最低分位排名（小=更负）：{fr.get('percentile_rank', 'UNKNOWN')}；近7天负值占比：{fr.get('negative_share_last_7d', 'UNKNOWN')}",
+              "- 负费率只是潜在逆向观察，必须等已确认支撑/价格结构信号；不单独做多。"]
     if r["data_errors"]:
         lines += ["", "## 数据获取异常"]
         for key, val in r["data_errors"].items():
