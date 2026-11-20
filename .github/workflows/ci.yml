@@ -30,3 +30,13 @@ jobs:
           path: output/study/
           if-no-files-found: warn
           retention-days: 30
+      - name: Run multi-year frozen funding study
+        run: python -m research.multiyear_event_study --output-dir output/multiyear
+      - name: Save multi-year study results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: funding-multi-year-analysis
+          path: output/multiyear/
+          if-no-files-found: warn
+          retention-days: 30
