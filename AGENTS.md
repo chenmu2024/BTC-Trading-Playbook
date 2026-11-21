@@ -18,3 +18,6 @@
 11. 每次分析可计算 `engine/eric_core.py` 中的D3数学核心，并在报告中标注 `CORE_FORMULA_PORT_UNVERIFIED`；禁止将D3数值直接解释为Eric v1.9.10“反转超卖”“严格底背离”或MTF共振已触发。
 12. 三份Pine已建立[数据导出侧本](pine/validation)及[校验说明](docs/TRADINGVIEW_PARITY.md)。如果未实际取得TradingView图表CSV或未完成实机编译，必须保持原始指标逐K等价状态NOT_TESTED；CI单元测试不能替代平台验证。
 13. 若取得CSV，先运行 `research/audit_tradingview_csv.py` 检查时间、OHLC和来源周期，再比较Eric基础D3，后续才考虑原始状态机与Python逐K匹配。
+
+14. 用户要求“按五步方法直接回测历史”时优先检查 `research/five_step_observable_backtest.py` 和 `research/RESULTS_FIVE_STEP_2026-11-21.md`，说明已完成历史OHLCV/Funding可观测子集执行回测。不要误说无法回测，也**不要**把该Python模型冒充包含完整原v3.3、Eric、真实CVD与OI的等价回测。
+15. 负Funding并非自动买入；2025—2026 B_RTO_FUND模型只实现+0.0910%模拟权益收益（9笔交易），早段仍亏损。带方向拆分的数据更重要：后段9笔仅2笔多头。任何结论必须标明成本、样本量、2022年EMA预热、历史后段非真正未知样本外。

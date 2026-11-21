@@ -67,3 +67,10 @@
 - **核验程序**：[research/audit_tradingview_csv.py](research/audit_tradingview_csv.py)，可检查Binance 1小时OHLC/时间戳是否与TradingView CSV一致、来源周期是否提前收盘，以及Eric数学D3是否接近。
 - **Eric D3数学核心**：[engine/eric_core.py](engine/eric_core.py) 已按原脚本LC2→RSI20→Stoch26→K4→D3计算并接入日常行情报告，但**未完成真正的Pine导出逐K对照**；Episode/反转/严格背离仍不可替代为代理。
 - 无CSV导出时只能声称“验证工具完成、数据尚未核验”，**不可声称完整指标等价**。
+
+## 五步交易模型直接回测（已完成，2026-11-21）
+- **最新完整审计报告**：[五步BTC 2022—2026历史执行回测](research/RESULTS_FIVE_STEP_2026-11-21.md)。
+- **可运行源码**：[research/five_step_observable_backtest.py](research/five_step_observable_backtest.py)，五年冻结数据无需TradingView CSV也可以直接重算，执行：`python -m research.five_step_observable_backtest --output-dir output/five_step`。
+- A=已完成1D+4H严格顺势，B=非A且接近已经确认的4H区间边缘；多空双向、扫盘→BMS→可选RTO，逆向已结算Funding作为可开关过滤，按下一根小时K开盘成交，计入风险仓位、止损止盈、手续费、滑点、资金费用及8小时K冷却期。
+- **实证结论**：A BMS早段+0.8475%、后段-1.8058%；B RTO早段-2.0627%、后段-0.7818%；B+逆向Funding后段+0.0910%但仅9笔，尚无稳定统计优势。
+- 注意2022年初因200日EMA预热不产生信号；现有历史**无五年逐笔CVD/OI及原Eric、v3.3逐K状态**，所以这不是完整原Pine组合等价回测。正式结果以仓库报告与GitHub Actions审计为准。

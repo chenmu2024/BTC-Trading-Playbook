@@ -70,3 +70,10 @@
 - `engine/eric_core.py` 已完成原始数学核心的独立移植并用于报告，有限历史播种；数学结果尚未与Pine实机逐K对齐；反转/背离/MTF状态始终UNKNOWN。
 - GitHub Actions新增 `Pine export provenance audit (CSV only)` 工作流；无CSV时应输出NOT_TESTED，不将CI通过误认为逐K一致。
 - 下一验收门槛：提供/取得包含2026年历史的TradingView CSV，逐K检查源码/成交/状态事件，再考虑升级算法等价状态。
+
+## 2026-11-21 — 五步策略直接历史执行研究 V0.1（已验证运行）
+- 代码：`research/five_step_observable_backtest.py`，自动测试及CI成功：[Actions 44843566803](https://github.com/chenmu2024/BTC-Trading-Playbook/actions/runs/44843566803)。
+- 结果：[research/RESULTS_FIVE_STEP_2026-11-21.md](research/RESULTS_FIVE_STEP_2026-11-21.md)，有按方向分项和逐笔交易CSV/JSON（Actions artifact）。
+- 16组（8种过滤×2个历史时段）多空回测；A和B分别使用已收盘趋势、位置、扫盘/BMS/RTO、资金费率和风控。删除了B模型中重复的区域过滤实验，避免虚增验证数量。
+- 本阶段结果仅是**observable-data subset**；真实历史OI/CVD、原v3.3/Eric/v1.1完整状态机尚未纳入，没有跨时期稳定盈利的证据。
+- 2022-01-01是历史数据起点，严格EMA200日线预热导致2022年约7月21日前不会触发。2025—2026也不是未触及样本外。

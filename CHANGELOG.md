@@ -35,3 +35,9 @@
 - 新增CSV审计脚本及安全要求：OHLC必须与Binance BTCUSDT永续价格/时间匹配，拒绝不明时区及明显未来信号；缺样本状态NOT_TESTED。
 - 根据Eric v1.9.10源代码实现LC2→Wilder RSI20→StochRSI26→K4→D3数学核心，并在BTC行情报告中单独展示；完整Episode/背离状态不可推断。
 - 添加全部相关单元测试；不调整历史亏损策略以迎合收益，不启用实盘自动交易。
+
+## 2026-11-21 — Run full historic observable five-step long/short backtest
+- 新增`research/five_step_observable_backtest.py`与自动测试；使用已归档2022—2026 Binance OHLCV及Funding研究多空对称交易。
+- 研究顺势A、区间逆势B；BMS和RTO分组、逆向Funding及连续3期过滤；下一根K开盘成交、95%名义敞口、0.5%/0.25%风险、2R、最长48h、8hK冷却、手续费滑点和资金费用。
+- 首轮实际执行结果无跨阶段稳定正收益；删除冗余B区域过滤变体，增加多空分别统计。
+- 新增[回测结论与复算说明](research/RESULTS_FIVE_STEP_2026-11-21.md)；保留原Pine v3.3/Eric/V1.1并明示其信号尚未逐K等价。
