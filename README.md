@@ -74,3 +74,13 @@
 - A=已完成1D+4H严格顺势，B=非A且接近已经确认的4H区间边缘；多空双向、扫盘→BMS→可选RTO，逆向已结算Funding作为可开关过滤，按下一根小时K开盘成交，计入风险仓位、止损止盈、手续费、滑点、资金费用及8小时K冷却期。
 - **实证结论**：A BMS早段+0.8475%、后段-1.8058%；B RTO早段-2.0627%、后段-0.7818%；B+逆向Funding后段+0.0910%但仅9笔，尚无稳定统计优势。
 - 注意2022年初因200日EMA预热不产生信号；现有历史**无五年逐笔CVD/OI及原Eric、v3.3逐K状态**，所以这不是完整原Pine组合等价回测。正式结果以仓库报告与GitHub Actions审计为准。
+
+## 2026-11-21：重要修正——独立只做多与逆向资金费率 V0.2
+**请优先读取最新报告**：[RESULTS_LONG_FUNDING_FOCUS_V0_2.md](research/RESULTS_LONG_FUNDING_FOCUS_V0_2.md)。
+
+- 已修复“连续3期Funding”历史回测中使用未来`fi+1`结算的时间泄漏；只允许 `fi-2, fi-1, fi` 三条当时已经结算的数据。**旧版连续3期结果不再有效**。
+- 新增9组独立方向账户，对照顺势只做多RTO、负Funding逆势只做多与独立空头；输出逐年信号漏斗、真实进入交易数量、止损止盈次数、手续费和模拟Funding。
+- 顺势只做多RTO：2022—2024七笔，+0.6154%；2025—2026五笔，+0.4947%，但**2026全年截至11月20日没有A_LONG_RTO已确认候选**；12笔不能证明盈利优势。
+- 负Funding逆势只做多RTO：2025—2026两笔，+0.7541%，全部来自2026；此前为0笔。连续3期负Funding在该独立多头模型中**0笔交易**。
+- 本研究`BMS`确认5根K、成交量≥1.0×过去20根均值，与日常配置4根、0.8×**不同**。历史实验代码自身是参数来源，不能把两个版本的业绩当成同一策略。
+- 运行：`python -m research.five_step_observable_backtest --output-dir output/five_step`，然后 `python -m research.focus_long_report --input output/five_step/results.json --output-dir output/long_focus`。

@@ -41,3 +41,9 @@ A/B模型分别统计；不因减少交易次数导致的偶然收益改善而�
 - 8套模型分别在2022—2024和2025—2026模拟独立权益路径，并输出交易逐笔审计文件。具体样本/收益/费用见 `research/RESULTS_FIVE_STEP_2026-11-21.md`。
 - 数据未覆盖原Eric正式反转事件、v3.3真实支撑压力评分、多年真实OI/逐笔CVD，故不能声称原策略完全已回测。下一阶段必须验证这些状态的因果历史可用时间，再进行逐K对齐。
 - 切勿基于本已见历史数据反复挑最有利参数后称2025—2026为未见样本；若回测缺失因子，则须明示风险而非自动放行。
+
+## 2026-11-21 V0.2：方向独立账户与未来数据修复
+- 已修复`funding_streak3`误用未来`fi+1`，添加测试防止未来信息泄漏。旧版连续3期Funding结果不可复用。
+- 9个方向独立候选：顺势LONG BMS、顺势LONG RTO、顺势LONG RTO+负Funding、逆势LONG RTO、逆势LONG RTO+负Funding、逆势LONG RTO+3期、顺势SHORT RTO、逆势SHORT RTO、逆势SHORT RTO+正Funding，分别在早晚两个样本区间模拟独立净值。
+- 项目报告：[RESULTS_LONG_FUNDING_FOCUS_V0_2.md](research/RESULTS_LONG_FUNDING_FOCUS_V0_2.md)。2026年顺势LONG RTO 0候选、逆势LONG RTO 10候选/6个止损几何合格；这些是模型过滤条件的客观阶段差异。
+- 不再主动为已有历史不断调参；下一轮先收集更多独立新时间段及真实Pine事件、OI/CVD，再冻结参数核验。

@@ -21,3 +21,7 @@
 
 14. 用户要求“按五步方法直接回测历史”时优先检查 `research/five_step_observable_backtest.py` 和 `research/RESULTS_FIVE_STEP_2026-11-21.md`，说明已完成历史OHLCV/Funding可观测子集执行回测。不要误说无法回测，也**不要**把该Python模型冒充包含完整原v3.3、Eric、真实CVD与OI的等价回测。
 15. 负Funding并非自动买入；2025—2026 B_RTO_FUND模型只实现+0.0910%模拟权益收益（9笔交易），早段仍亏损。带方向拆分的数据更重要：后段9笔仅2笔多头。任何结论必须标明成本、样本量、2022年EMA预热、历史后段非真正未知样本外。
+
+16. **重要：五步历史回测V0.2替代旧版中“连续3期Funding”成绩**。原代码曾误用下一期未结算数据；目前仅允许`fi-2,fi-1,fi`。旧版`B_RTO_STREAK3`的2022—2024“4笔-0.6192%”不得复述为有效结果；现为5笔-0.8857%。
+17. 优先引用[独立方向回测研究V0.2](research/RESULTS_LONG_FUNDING_FOCUS_V0_2.md)，并明确2026年A顺势LONG+RTO候选为0，历史盈利主要来自2024/2025，2023有亏损；B逆势LONG+负Funding仅2026两笔样本，连续3期硬过滤0笔。
+18. `research/five_step_observable_backtest.py`冻结研究参数：BMS确认5根、成交量1.0×，不同于`config/strategy.yaml`日常分析4根、0.8×；不能混用或以实验业绩替代分析配置表现。独立多头账户与混合账户方向子集是两种不同统计母体。

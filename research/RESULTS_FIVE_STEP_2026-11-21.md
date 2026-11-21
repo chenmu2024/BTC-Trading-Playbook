@@ -1,3 +1,5 @@
+> **历史报告已被V0.2部分替代（2026-11-21）**：旧版“连续3期资金费率”误用了未来结算记录，相关行与结论**无效**；新结果和独立方向账户回测请以 [RESULTS_LONG_FUNDING_FOCUS_V0_2.md](RESULTS_LONG_FUNDING_FOCUS_V0_2.md) 为准。以下V0.1内容仅保留用于审计历史变更，其他未受该项代码影响的收益作为旧版研究记录。
+
 # BTC 五步交易体系｜2022—2026 历史执行回测 V0.1
 
 **回测日期：2026-11-21。代码提交：439ac2a0673696ccb2399c97c7b5ca004c71f950。GitHub Actions：[44843566803](https://github.com/chenmu2024/BTC-Trading-Playbook/actions/runs/44843566803) — success。**
