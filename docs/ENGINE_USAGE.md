@@ -52,3 +52,9 @@ python -m engine.cli --snapshot-file path/to/snapshot.json --output-dir output
 ## Eric D3基础数学核心（独立移植，尚未逐K验证）
 `engine/eric_core.py` 按用户Eric v1.9.10原始公式使用 `(low+close)/2 → Wilder RSI(20) → Stoch RSI(26) → SMA(4) → SMA(3)`，并按连续有效Stoch值数量至少6根判定D3输出就绪；仅作为标准已收盘K线数学参考数值。
 自动BTC报告的 `eric_core_math` 会显示 `CORE_FORMULA_PORT_UNVERIFIED` 状态和D3读数，但不输出原Eric反转、背离、Episode、MTF状态。因只取260根历史K线，RMA种子可能与TradingView完整历史图表不同。完整验证见 [TRADINGVIEW_PARITY.md](TRADINGVIEW_PARITY.md)。
+
+## 2026-11-21 默认 Pure Five-Step v0.4
+- 分析引擎按 **Step1收盘趋势→Step2历史前高低→Step3 SH/BMS/RTO→Step4 Volume/Delta/OI/Funding→Step5风险/WAIT** 输出，详见 [纯五步规范](PURE_FIVE_STEP.md)。
+- `engine/five_step.py` 只用已收盘1H K线，锁定SH、BMS参考位、确认截止、失效优先与RTO回踩状态。属于价格行为代理，不等价于Pine V1.1，也没有自动下单功能。
+- 默认配置 `swing.research_overlay_enabled=false`：不计算、不展示Eric。改为true时，只增加未验证的D3数学核心**独立研究附录**；`swing.entry_gate_enabled=true`时CLI拒绝运行，不允许Eric决定交易。
+- 原五年历史回测参数BMS=5根、最低量比1.0；新日常分析BMS=4根、量比0.8，**不能共用历史业绩**。即使出现历史`CONFIRMED_RTO`也不能等于当前可直接交易。默认仍为WAIT。
