@@ -86,3 +86,10 @@
 - `A_LONG_RTO`在2026年没有候选RTO信号，是**信号漏斗本身为0**，不是Funding过滤或止损距离导致。
 - 回测5根确认/1.0×成交量与常规分析配置4根/0.8×不同；版本独立，完全原指标的Pine逐K一致性仍未完成。
 - 当前状态：RESEARCH_ONLY；**不应实盘自动交易**。详见[新V0.2结果](research/RESULTS_LONG_FUNDING_FOCUS_V0_2.md)。
+
+## 2026-11-21 Pure Five-Step v0.4：独立价格行为状态机
+- 默认只有纯五步：已收盘趋势→前高低流动性→价格SH/BMS/RTO状态→Volume/Delta/OI/Funding反证→风险WAIT。Eric仅显式开启时成为独立研究附录，绝不影响决策。
+- `engine/five_step.py` 新增严格BMS/RTO时限、扫盘极值失效、历史确认时间和事件状态；单元测试覆盖过期信号不能倒填、失效优先、Eric开启不改决策。
+- **未完成**原Pine V1.1/v3.3/Eric完整等价验证；该模块为 `PRICE_ACTION_PROXY`，无需声称实际交易盈利率得到改善。
+- `config/strategy.yaml`日常分析用4根BMS和0.8倍最低量；五年冻结历史回测用5根和1.0倍，历史研究成果不可直接迁移为新配置业绩。
+- 研究状态仍为RESEARCH_ONLY，禁止自动下单。
