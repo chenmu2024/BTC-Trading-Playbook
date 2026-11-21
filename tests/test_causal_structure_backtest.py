@@ -47,6 +47,16 @@ class CausalStructureTests(unittest.TestCase):
         self.assertIn("results",r)
         self.assertGreater(r["observations"]["sweeps"],0)
         self.assertGreater(r["observations"]["bms"],0)
+        # Pin frozen-data execution counts to detect accidental rule drift.
+        self.assertEqual(r["observations"]["sweeps"],1220)
+        self.assertEqual(r["observations"]["bms"],192)
+        self.assertEqual(r["observations"]["rto"],102)
+        self.assertEqual(r["observations"]["confirmed_4h_proxy_zones"],139)
+        self.assertEqual(r["risk_rejected"],129)
+        self.assertEqual(r["results"]["BMS_RTO"]["train"]["all"]["nonoverlap_trades"],27)
+        self.assertEqual(r["results"]["BMS_RTO"]["later_historical"]["all"]["nonoverlap_trades"],23)
+        self.assertNotIn("negative",r["results"]["BMS_RTO"]["train"])
+        self.assertEqual(r["results"]["BMS_RTO"]["later_historical"]["negative"]["nonoverlap_trades"],4)
 
 
 if __name__=="__main__":
