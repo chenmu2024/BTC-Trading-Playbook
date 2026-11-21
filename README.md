@@ -50,3 +50,13 @@
 - 复算：`python -m research.funding_event_study --data research/data/binance_btcusdt_2026-05-01_to_2026-11-20.json --output-dir output/study`。
 - CI使用固定快照对全部研究结果做回归校验，提供 JSON/Markdown 报告 Artifact，不依赖实时 API。
 - **研究发现**：负资金费率单独作为BTC做多条件，在本次2026年5—11月样本中未展示可靠正期望；结构过滤事件过少，不能宣称组合盈利。资金费率仍保留为高优先级**观察指标**，不是买入信号。
+
+## 2022—2026 资金费率与价格确认专项研究（已执行）
+**最新正式结论**：[近五年资金费率 × SH/BMS/RTO 研究报告](research/RESULTS_2022_2026.md)。
+
+- 冻结了2022—2026五份Binance USDⓈ-M年度数据：**42,839根完整1小时K线、5,355次Funding结算，负费率818次**。
+- [跨年度Funding事件分析](research/multiyear_event_study.py)：按年度比较结算后24小时、72小时、7天模拟多头净收益，并做非重叠事件敏感性。
+- [独立因果结构策略研究](research/causal_structure_backtest.py)：扫盘→微结构突破→可选回踩，按下一小时开盘、预设止损/2R目标和最多48小时退出进行模拟；对比负Funding过滤与未过滤。
+- [4H双Pivot支撑代理](research/mtf_support_proxy.py) 必须经确认后才生效，**尚不等于用户的Strong MTF SR v3.3**，也未复刻 Eric v1.9.10。
+- 结果不支持宣称整体有稳定盈利优势。GitHub CI会逐次复算并保存多年度事件/结构研究的JSON与Markdown结果，可在Actions Artifacts查看。
+- 运行：`python -m research.multiyear_event_study`；`python -m research.causal_structure_backtest`。

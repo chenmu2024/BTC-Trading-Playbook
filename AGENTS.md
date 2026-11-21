@@ -11,3 +11,6 @@
 8. 策略版本更改需要CHANGELOG记录、保留旧代码及回测；不得在没有新证据时承诺盈利。
 
 本仓库所有信号目前均为研究用途。
+
+9. 当解释Funding作为潜在底部因素时，必须阅读 [research/RESULTS_2022_2026.md](research/RESULTS_2022_2026.md)，同时区分“结算后固定持有事件研究”和“确认结构后交易”的不同统计母体；不能宣称负Funding已证实有稳定的多头利润优势。
+10. 新增 `research/causal_structure_backtest.py` 是独立PROXY，不是用户的Strong MTF SR v3.3 / Eric / Pine V1.1联合策略。跨年度样本量为0或4时必须明确“证据不足”，严禁计算貌似可靠的胜率预测。

@@ -23,3 +23,9 @@
 - 添加研究程序与回归单元测试；入场在结算后下一小时开盘，使用固定24h/72h/7d持有、模拟手续费/滑点/持仓Funding。
 - 新增非重叠事件检查、按2026-09-01切分的后段观察，以及2026-11-21正式研究结论。
 - 目前不支持负Funding即可买入；组合过滤样本不足，待未来独立数据验证。
+
+## 2026-11-21 — Five-year negative Funding & causal structure proxy research
+- 新增2022—2026五份公共期货小时K线与Funding年度历史快照，合计42,839根小时K / 5,355条Funding。
+- 新增多年事件研究、4h双Pivot确认支撑代理、SH→BMS→RTO仅多头代理与仓位/成本/止损止盈/资金费用模拟。
+- 自动CI复算研究报告并提供JSON/Markdown Artifacts；添加样本统计与信号数量回归测试。
+- 研究输出显示负Funding与回踩组合样本不足、未证实稳定正期望；原始Pine v3.3/Eric/V1.1逐K等价性仍UNKNOWN。
