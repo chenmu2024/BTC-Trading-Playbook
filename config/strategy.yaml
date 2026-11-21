@@ -22,6 +22,9 @@ support_resistance:
   fallback: prior_closed_bar_extrema_proxy
   proxy_must_be_labelled: true
 swing:
+  d3_math_source: engine/eric_core.py
+  d3_math_port_status: CORE_FORMULA_PORT_UNVERIFIED
+  d3_is_entry_signal: false
   canonical_source: pine/eric_swing_filter_v1_9_10.pine
   pine_compile_replay_verified: false
   external_parity_verified: false

@@ -48,3 +48,7 @@ python -m engine.cli --snapshot-file path/to/snapshot.json --output-dir output
 引擎读取最多1000条已结算Binance USDⓈ-M Funding历史并判断观察状态。跨频率采用与上一结算间隔有关的**线性8小时等效折算**，仅供跨期比较，不代表复利或真实费用收益。
 `NEGATIVE_WATCH`=首次或不足3期负值；`PERSISTENT_NEGATIVE_WATCH`=至少3期连续负值；`DEEP_NEGATIVE_WATCH`=同时处于可用历史最低10%分位（需至少60个有效样本）。
 此模块无自动买入指令；当历史数据不足/过期时输出UNKNOWN/STALE。结算间隔若频繁缩短，1000条数据可能覆盖不到90天，报告必须列起始日期与样本数量。
+
+## Eric D3基础数学核心（独立移植，尚未逐K验证）
+`engine/eric_core.py` 按用户Eric v1.9.10原始公式使用 `(low+close)/2 → Wilder RSI(20) → Stoch RSI(26) → SMA(4) → SMA(3)`，并按连续有效Stoch值数量至少6根判定D3输出就绪；仅作为标准已收盘K线数学参考数值。
+自动BTC报告的 `eric_core_math` 会显示 `CORE_FORMULA_PORT_UNVERIFIED` 状态和D3读数，但不输出原Eric反转、背离、Episode、MTF状态。因只取260根历史K线，RMA种子可能与TradingView完整历史图表不同。完整验证见 [TRADINGVIEW_PARITY.md](TRADINGVIEW_PARITY.md)。

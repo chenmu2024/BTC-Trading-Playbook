@@ -65,7 +65,8 @@ python -m research.audit_tradingview_csv --csv research/parity/exports/sweep_1h.
 - 要求至少100根重合K，否则拒绝声称数据质量通过；
 - 检查脚本来源周期的最近已收盘时间不能超前于主图K线收盘时间；
 - 统计导出列非空数量和候选事件数，识别缺列、错合约、价格失配、时间错位；
-- 输出 `CHART_DATA_VALIDATED` / `CHART_DATA_MISMATCH`，但**算法一致性永远标 `NOT_TESTED`**，直到开发独立算法且逐K比较。
+- Eric导出另可比较 `ERIC_1h_D3` 与已移植的[数学核心](../engine/eric_core.py)：默认跳过年初首400根参考K线以降低Wilder RMA初始值影响，在可比100根以上的样本中按0.05 D3点容差列出偏差。状态可能是 `D3_MATH_MATCH`、`D3_MATH_MISMATCH` 或 `INSUFFICIENT_DATA`。这仅测试数学核心，不测试Eric的Episode、背离或多周期状态机。
+- 输出 `CHART_DATA_VALIDATED` / `CHART_DATA_MISMATCH`，**完整算法一致性始终标 `NOT_TESTED`**，直到逐K比较独立实现的全部状态机；即便D3数学核心通过，也不能把整个Eric标为 `VERIFIED`。
 
 ### 匹配阈值、数据范围
 - 单价容差 0.2 USDT 是审计阈值，不是原脚本参数；如果出现系统性偏差，应先查合约/交易所/时区，不建议随意放大容差。
