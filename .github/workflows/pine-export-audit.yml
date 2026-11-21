@@ -1,0 +1,46 @@
+name: Pine export provenance audit (CSV only)
+on:
+  push:
+    paths:
+      - 'research/parity/exports/*.csv'
+      - 'research/audit_tradingview_csv.py'
+      - '.github/workflows/pine-export-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit_csv_exports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit only provided TradingView exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/parity
+          any=0
+          for item in "sr:research/parity/exports/sr_1h.csv" "eric:research/parity/exports/eric_1h.csv" "sweep:research/parity/exports/sweep_1h.csv"; do
+            kind="${item%%:*}"
+            file="${item#*:}"
+            if [[ -f "$file" ]]; then
+              any=1
+              python -m research.audit_tradingview_csv --csv "$file" --kind "$kind" --output "output/parity/${kind}_chart_audit.json"
+            else
+              echo "NOT_TESTED: $kind CSV not provided"
+            fi
+          done
+          if [[ "$any" == 0 ]]; then
+            printf '%s\n' '{"status":"NOT_TESTED","reason":"No TradingView CSV exports provided; no Pine-vs-Python parity claim"}' > output/parity/status.json
+          fi
+      - name: Publish audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pine-export-chart-data-audit
+          path: output/parity/
+          if-no-files-found: warn
+          retention-days: 30
