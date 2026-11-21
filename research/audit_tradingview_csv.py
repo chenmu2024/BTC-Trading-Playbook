@@ -14,6 +14,7 @@ import math
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from engine.eric_core import d3_history
 
 INTERVAL_HOUR_MS = 3_600_000
 REQUIRED = {
@@ -106,6 +107,45 @@ def load_csv(filepath, kind, *, assume_utc=False):
     return result
 
 
+def compare_eric_d3(csv_bars, binance, *, tolerance=0.05, warmup_reference_bars=400,
+                    minimum_comparison_bars=100):
+    """Compare only 1H source mathematical D3, not the Eric episode/event engine."""
+    reference=binance["klines"]
+    candles=[{"low":row[3],"close":row[4]} for row in reference]
+    computed=d3_history(candles)
+    index={int(row[0]):i for i,row in enumerate(reference)}
+    deviations=[]
+    missing=0
+    for row in csv_bars:
+        idx=index.get(row["open_time_ms"])
+        if idx is None or idx<warmup_reference_bars:
+            continue
+        reported=row["telemetry"].get("ERIC_1h_D3")
+        expected=computed[idx]["d3"]
+        if reported is None or expected is None:
+            missing+=1
+            continue
+        deviations.append({"time_ms":row["open_time_ms"],
+                           "python":expected,"tradingview":reported,
+                           "error":abs(expected-reported)})
+    if len(deviations)<minimum_comparison_bars:
+        return {"status":"INSUFFICIENT_DATA","compared_bars":len(deviations),
+                "missing_values_after_warmup":missing,
+                "full_eric_algorithm_parity":"NOT_TESTED"}
+    errors=sorted(x["error"] for x in deviations)
+    bad=[x for x in deviations if x["error"]>tolerance]
+    return {"status":"D3_MATH_MATCH" if not bad else "D3_MATH_MISMATCH",
+            "compared_bars":len(deviations),
+            "warmup_reference_bars":warmup_reference_bars,
+            "tolerance_d3_points":tolerance,
+            "max_abs_d3_difference":round(errors[-1],7),
+            "p95_abs_d3_difference":round(errors[int(0.95*(len(errors)-1))],7),
+            "mismatch_count":len(bad),
+            "mismatch_examples":bad[:10],
+            "missing_values_after_warmup":missing,
+            "full_eric_algorithm_parity":"NOT_TESTED",
+            "warning":"Only raw LC2/RSI/Stoch/K/D numerical math; no Episode or divergence/MTF state validation"}
+
 def audit(csv_bars, binance, kind, *, tolerance=0.2, min_matches=100):
     if binance.get("symbol")!="BTCUSDT" or binance.get("market")!="USD-M_PERPETUAL":
         raise ValueError("Reference market mismatch: expected Binance BTCUSDT perpetual")
@@ -139,6 +179,7 @@ def audit(csv_bars, binance, kind, *, tolerance=0.2, min_matches=100):
                                       "source_close_unix_s":v})
             if name.startswith(("SWEEP_entry_","SWEEP_sweep_","ERIC_reversal_","ERIC_bull_divergence_")) and v>0.5:
                 event_counts[name]+=1
+    eric_math = compare_eric_d3(csv_bars, binance) if kind=="eric" else None
     if len(verified)<min_matches:
         raise ValueError(f"Only {len(verified)} time-matched bars, need {min_matches}; verify export symbol and range")
     result={
@@ -146,6 +187,7 @@ def audit(csv_bars, binance, kind, *, tolerance=0.2, min_matches=100):
        "kind":kind,
        "status":"CHART_DATA_VALIDATED" if not price_mismatch and not source_future else "CHART_DATA_MISMATCH",
        "pine_algorithm_parity":"NOT_TESTED",
+       "eric_d3_core_comparison":eric_math,
        "tradingview_export_total_bars":len(csv_bars),
        "reference_bars":len(bars),
        "matched_bars":len(verified),
