@@ -42,9 +42,7 @@ VARIANTS=(
     Variant("A_RTO_ZONE_FUND","A","RTO","CONTRARIAN",True),
     Variant("B_RTO","B","RTO","ANY"),
     Variant("B_RTO_FUND","B","RTO","CONTRARIAN"),
-    Variant("B_RTO_ZONE","B","RTO","ANY",True),
-    Variant("B_RTO_ZONE_FUND","B","RTO","CONTRARIAN",True),
-    Variant("B_RTO_ZONE_STREAK3","B","RTO","STREAK3",True),
+    Variant("B_RTO_STREAK3","B","RTO","STREAK3",True),
 )
 
 def iso(ms):
@@ -251,7 +249,21 @@ def simulate(events,bars,funds,variant,split):
         selected.append(result)
     wins=[v["pnl"] for v in selected if v["pnl"]>0]
     losses=[-v["pnl"] for v in selected if v["pnl"]<0]
+    # Side breakdown is a subset of the same single-position equity path;
+    # side-only returns are NOT independent portfolio equity curves.
+    by_side={}
+    for direction,label in ((1,"LONG"),(-1,"SHORT")):
+        group=[t for t in selected if t["side"]==direction]
+        win=[t["pnl"] for t in group if t["pnl"]>0]
+        loss=[-t["pnl"] for t in group if t["pnl"]<0]
+        by_side[label]={"count":len(group),
+                        "wins":len(win),
+                        "win_rate_pct":round(100*len(win)/len(group),2) if group else None,
+                        "profit_factor":round(sum(win)/sum(loss),4) if loss else None,
+                        "avg_trade_equity_pct":round(sum(t["pnl_pct"] for t in group)/len(group),4) if group else None,
+                        "sum_net_pnl_usdt":round(sum(t["pnl"] for t in group),2)}
     return {"variant":variant.name,"split":split,"trades":len(selected),
+            "by_side":by_side,
             "eligible_signals":considered,"rejected_stop_distance":geometry,
             "overlap_or_cooldown":cooldowns,
             "win_rate_pct":round(100*len(wins)/len(selected),2) if selected else None,
@@ -302,6 +314,14 @@ def markdown(r):
     for x in r["results"]:
         f=lambda k: x[k] if x[k] is not None else "—"
         lines.append(f"| {x['variant']} | {x['split']} | {x['eligible_signals']} | {x['trades']} | {f('win_rate_pct')} | {f('profit_factor')} | {x['return_pct']} | {x['max_intratrade_drawdown_pct']} |")
+    lines+=["","## 核心模型的多头/空头分项（同一净值路径的交易子集）","",
+           "| 模型 | 区间 | 方向 | 笔数 | 胜率% | PF | 平均每笔权益收益% |",
+           "|---|---|---|---:|---:|---:|---:|"]
+    for x in r["results"]:
+        if x["variant"] not in ("A_BMS","A_RTO","B_RTO","B_RTO_FUND"):continue
+        for direction,entry in x["by_side"].items():
+            fmt=lambda v: "—" if v is None else str(v)
+            lines.append(f"| {x['variant']} | {x['split']} | {direction} | {entry['count']} | {fmt(entry['win_rate_pct'])} | {fmt(entry['profit_factor'])} | {fmt(entry['avg_trade_equity_pct'])} |")
     lines+=["","## 边界与缺失",""]+["- "+x for x in r["caveats"]]
     return "\n".join(lines)+"\n"
 
