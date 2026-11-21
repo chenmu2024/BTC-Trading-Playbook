@@ -22,6 +22,8 @@ def main() -> int:
     if (config.get("status") != "research_only"
             or config["analysis"]["symbol"] != "BTCUSDT"
             or config["analysis"]["preferred_market"] != "USD-M_PERPETUAL"
+            or config["analysis"].get("primary_method", "pure_five_step") != "pure_five_step"
+            or config.get("swing", {}).get("entry_gate_enabled", False)
             or config["risk"]["auto_trading_enabled"]):
         raise ValueError("Unsafe/unrecognized config. This program supports research BTCUSDT USD-M only.")
     if args.snapshot_file:
