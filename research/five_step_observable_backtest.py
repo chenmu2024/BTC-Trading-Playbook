@@ -182,7 +182,9 @@ def matches(signal,variant):
 def fill(signal,bars,funds,ftimes,prefix,equity,risk):
     """Next 1H open with adverse slippage; conservative stop-first rule."""
     i=signal["signal_index"]+1
-    if i>=len(bars):return None
+    # Reject incomplete 48h observation windows instead of silently
+    # shortening the final trade when the archive ends.
+    if i+HOLD>len(bars):return None
     side=signal["side"]
     entry=bars[i][1]*(1+side*SLIP)
     stop=signal["extreme"]-side*0.20*signal["sweep_atr"]
@@ -235,6 +237,9 @@ def simulate(events,bars,funds,variant,split):
         if not matches(signal,variant):continue
         i=signal["signal_index"]+1
         if i>=len(bars) or not start<=bars[i][0]<end:continue
+        # Lock all potential maximum-hold candles inside the split; do not
+        # select favorable early exits while dropping unfavorable late exits.
+        if bars[i][0]+HOLD*HOUR>end:continue
         considered+=1
         if i<=last_exit+COOLDOWN:cooldowns+=1;continue
         result=fill(signal,bars,funds,times,prefix,equity,
