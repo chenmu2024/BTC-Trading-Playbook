@@ -1,0 +1,276 @@
+//@version=6
+import TradingView/ta/14 as tvta
+
+// RESEARCH-ONLY V1.1. Not a validated profitable system.
+// Signals are based on completed candles. Estimated Delta is not a trade-by-trade tape.
+// process_orders_on_close makes signal-close market fills optimistic in some conditions;
+// compare results with next-bar fills before using any live execution.
+strategy("5-Step Liquidity Sweep | Diagnostic V1.1 PARITY EXPORT", overlay = true, initial_capital = 10000, currency = currency.USD, pyramiding = 0, commission_type = strategy.commission.percent, commission_value = 0.06, slippage = 2, margin_long = 100, margin_short = 100, process_orders_on_close = true, calc_on_every_tick = false, use_bar_magnifier = false)
+
+// ---- 1. Market context. Use only the PREVIOUS closed HTF candle. ----
+g1 = "1. 市场结构"
+htf          = input.timeframe("1D", "高周期", group = g1)
+emaFastLen   = input.int(50, "EMA快线", minval = 2, group = g1)
+emaSlowLen   = input.int(200, "EMA慢线", minval = 3, group = g1)
+trendMode    = input.string("EMA50/200严格", "趋势过滤", options = ["EMA50/200严格", "价格与EMA200", "关闭"], group = g1)
+direction    = input.string("双向", "方向", options = ["双向", "只做多", "只做空"], group = g1)
+
+// ---- 2-3. Observable liquidity sweep and micro-structure break (BMS proxy). ----
+g2 = "2-3. 扫盘、微结构突破、回踩"
+liqLen       = input.int(20, "流动性回看K线", minval = 5, maxval = 200, group = g2)
+microLen     = input.int(3, "扫盘前微结构长度", minval = 2, maxval = 20, group = g2)
+minPenATR    = input.float(0.10, "至少刺破前高/低(ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = g2)
+minBackATR   = input.float(0.05, "收回前高/低深度(ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = g2)
+minWickFrac  = input.float(0.30, "扫盘影线占K线范围最低比例", minval = 0.0, maxval = 0.9, step = 0.05, group = g2)
+minVolRatio  = input.float(1.0, "扫盘成交量/20均量下限", minval = 0.0, maxval = 10.0, step = 0.1, group = g2)
+confirmBars  = input.int(5, "扫盘后等待结构突破K线", minval = 1, maxval = 30, group = g2)
+minBodyATR   = input.float(0.20, "结构确认实体下限(ATR)", minval = 0.0, maxval = 3.0, step = 0.05, group = g2)
+entryMode    = input.string("回踩收回", "入场模式", options = ["突破确认", "回踩收回"], group = g2)
+retestBars   = input.int(5, "结构突破后等待回踩K线", minval = 1, maxval = 30, group = g2)
+retestNear   = input.float(0.15, "回踩允许接近距离(ATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = g2)
+retestDeep   = input.float(0.35, "回踩允许最大穿透(ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = g2)
+
+// ---- 4. Optional supporting signals. These are not independent directional votes. ----
+g3 = "4. 低周期估算Delta / 信息数据"
+ltf          = input.timeframe("5", "估算Delta的低周期", group = g3)
+deltaMode    = input.string("关闭", "Delta过滤(A/B测试)", options = ["关闭", "扫盘反向", "结构确认同向", "两者都需要"], group = g3)
+oiSymbol     = input.string("", "OI数据代码(可选，仅显示)", group = g3)
+fundSymbol   = input.string("", "资金费率代码(可选，仅显示)", group = g3)
+
+// ---- 5. Execution and controls. ----
+g4 = "5. 交易执行和仓位"
+riskPct      = input.float(0.50, "每笔预设权益风险%", minval = 0.05, maxval = 3.0, step = 0.05, group = g4)
+rr           = input.float(2.0, "目标R倍数", minval = 0.5, maxval = 8.0, step = 0.25, group = g4)
+atrLen       = input.int(14, "ATR周期", minval = 2, group = g4)
+stopBuffATR  = input.float(0.20, "扫盘极值外止损缓冲(ATR)", minval = 0, maxval = 2.0, step = 0.05, group = g4)
+minStopATR   = input.float(0.25, "最小允许止损距离(ATR)", minval = 0.05, maxval = 3.0, step = 0.05, group = g4)
+maxStopATR   = input.float(3.0, "最大允许止损距离(ATR)", minval = 0.25, maxval = 10, step = 0.25, group = g4)
+maxNotional  = input.float(95, "最大名义敞口占权益%", minval = 5, maxval = 100, step = 5, group = g4)
+cooldownBars = input.int(8, "平仓后冷却K线", minval = 0, maxval = 100, group = g4)
+useTimeStop  = input.bool(false, "启用最长持仓退出", group = g4)
+maxHoldBars  = input.int(48, "最长持仓K线", minval = 1, maxval = 500, group = g4)
+
+// ---- Visual options ----
+g5 = "显示设置"
+showLevels  = input.bool(true, "显示流动性上下沿", group = g5)
+showSweeps  = input.bool(false, "显示每个扫盘候选点", group = g5)
+showPanel   = input.bool(true, "显示状态面板", group = g5)
+
+if barstate.isfirst
+    if not timeframe.isintraday or timeframe.in_seconds(timeframe.period) >= timeframe.in_seconds("1D")
+        runtime.error("只支持日内周期（如30分钟、1小时、4小时）。")
+    if timeframe.in_seconds(ltf) >= timeframe.in_seconds(timeframe.period)
+        runtime.error("估算Delta低周期必须小于主图周期。")
+    if timeframe.in_seconds(htf) <= timeframe.in_seconds(timeframe.period)
+        runtime.error("大周期必须高于主图周期。")
+
+[closedHTF, fastHTF, slowHTF] = request.security(syminfo.tickerid, htf, [close[1], ta.ema(close, emaFastLen)[1], ta.ema(close, emaSlowLen)[1]], lookahead = barmerge.lookahead_on)
+trendLong  = trendMode == "关闭" or (trendMode == "EMA50/200严格" ? (closedHTF > fastHTF and fastHTF > slowHTF) : closedHTF > slowHTF)
+trendShort = trendMode == "关闭" or (trendMode == "EMA50/200严格" ? (closedHTF < fastHTF and fastHTF < slowHTF) : closedHTF < slowHTF)
+canLong    = trendLong and direction != "只做空"
+canShort   = trendShort and direction != "只做多"
+
+prevHigh    = ta.highest(high[1], liqLen)
+prevLow     = ta.lowest(low[1], liqLen)
+preMicroHi  = ta.highest(high[1], microLen)
+preMicroLo  = ta.lowest(low[1], microLen)
+atr         = ta.atr(atrLen)
+volMA       = ta.sma(volume, 20)
+rangeBar    = high - low
+lowWickFrac = rangeBar > 0 ? (math.min(open, close) - low) / rangeBar : 0.0
+hiWickFrac  = rangeBar > 0 ? (high - math.max(open, close)) / rangeBar : 0.0
+volumeOK    = not na(volMA) and volume >= volMA * minVolRatio
+
+// Estimated Delta: lower-TF price/volume classification, not actual aggressor prints.
+[deltaOpen, deltaHigh, deltaLow, deltaClose] = tvta.requestVolumeDelta(ltf, "1D")
+barDelta      = deltaClose - deltaOpen
+needSweepD    = deltaMode == "扫盘反向" or deltaMode == "两者都需要"
+needConfirmD  = deltaMode == "结构确认同向" or deltaMode == "两者都需要"
+longSweepDOK  = not needSweepD or (not na(barDelta) and barDelta < 0)
+shortSweepDOK = not needSweepD or (not na(barDelta) and barDelta > 0)
+longConfDOK   = not needConfirmD or (not na(barDelta) and barDelta > 0)
+shortConfDOK  = not needConfirmD or (not na(barDelta) and barDelta < 0)
+
+longSweep  = barstate.isconfirmed and canLong and volumeOK and lowWickFrac >= minWickFrac and low < prevLow - atr * minPenATR and close > prevLow + atr * minBackATR and longSweepDOK
+shortSweep = barstate.isconfirmed and canShort and volumeOK and hiWickFrac >= minWickFrac and high > prevHigh + atr * minPenATR and close < prevHigh - atr * minBackATR and shortSweepDOK
+
+// Optional informational feeds; no automatic entry filtering.
+float oi = na
+float funding = na
+if oiSymbol != ""
+    oi := request.security(oiSymbol, timeframe.period, close, ignore_invalid_symbol = true)
+if fundSymbol != ""
+    funding := request.security(fundSymbol, timeframe.period, close, ignore_invalid_symbol = true)
+oiDelta = oi - oi[1]
+
+// State: 0 idle, 1 sweep waiting for micro-BMS, 2 waiting for post-BMS retest.
+// side: +1 buy-side intention after low sweep; -1 sell-side after high sweep.
+var int   phase        = 0
+var int   side         = 0
+var int   sweepBar     = na
+var int   breakBar     = na
+var int   lastExitBar  = na
+var float sweepExtreme = na
+var float bmsLevel     = na
+var float sweepATR     = na
+var float stopLine     = na
+var float targetLine   = na
+
+bool longEntrySignal  = false
+bool shortEntrySignal = false
+bool bmsUpSignal      = false
+bool bmsDownSignal    = false
+
+if barstate.isconfirmed
+    // Track exits: no immediate re-entry after a completed position.
+    if strategy.closedtrades > nz(strategy.closedtrades[1], 0)
+        lastExitBar := bar_index
+        stopLine := na
+        targetLine := na
+
+    // Re-check setup conditions only with closed bar data.
+    if phase != 0
+        bool brokenExtreme = side == 1 ? low <= sweepExtreme : high >= sweepExtreme
+        bool timedOut = phase == 1 ? (bar_index - sweepBar > confirmBars) : (bar_index - breakBar > retestBars)
+        if brokenExtreme or timedOut or (side == 1 and not canLong) or (side == -1 and not canShort)
+            phase := 0
+            side := 0
+
+    bool flatAndReady = strategy.position_size == 0 and (na(lastExitBar) or bar_index > lastExitBar + cooldownBars)
+
+    if flatAndReady
+        // A new setup starts only when no prior setup is active.
+        if phase == 0
+            if longSweep
+                phase := 1
+                side := 1
+                sweepBar := bar_index
+                sweepExtreme := low
+                sweepATR := atr
+                bmsLevel := math.max(high, preMicroHi)
+            else if shortSweep
+                phase := 1
+                side := -1
+                sweepBar := bar_index
+                sweepExtreme := high
+                sweepATR := atr
+                bmsLevel := math.min(low, preMicroLo)
+
+        // Confirm a meaningful close beyond the sweep candle AND prior local structure.
+        if phase == 1 and bar_index > sweepBar
+            bool strongBody = math.abs(close - open) >= atr * minBodyATR
+            bool breakUp = side == 1 and close > bmsLevel and close > open and strongBody and longConfDOK
+            bool breakDn = side == -1 and close < bmsLevel and close < open and strongBody and shortConfDOK
+            if breakUp or breakDn
+                bmsUpSignal := breakUp
+                bmsDownSignal := breakDn
+                breakBar := bar_index
+                if entryMode == "突破确认"
+                    // Ready for a trade on this completed bar.
+                    float rawStop = side == 1 ? sweepExtreme - sweepATR * stopBuffATR : sweepExtreme + sweepATR * stopBuffATR
+                    float stopDistance = math.abs(close - rawStop)
+                    bool geometryOK = side == 1 ? rawStop < close : rawStop > close
+                    bool riskOK = geometryOK and not na(stopDistance) and stopDistance >= atr * minStopATR and stopDistance <= atr * maxStopATR and strategy.equity > 0
+                    if riskOK
+                        float qtyByRisk = strategy.equity * riskPct / 100 / (stopDistance * syminfo.pointvalue)
+                        float qtyByCap = strategy.equity * maxNotional / 100 / (close * syminfo.pointvalue)
+                        float orderQty = math.min(qtyByRisk, qtyByCap)
+                        if orderQty > 0
+                            stopLine := rawStop
+                            targetLine := side == 1 ? close + stopDistance * rr : close - stopDistance * rr
+                            if side == 1
+                                strategy.entry("LONG", strategy.long, qty = orderQty, alert_message = "5STEP_LONG")
+                                strategy.exit("L-X", "LONG", stop = stopLine, limit = targetLine)
+                                longEntrySignal := true
+                            else
+                                strategy.entry("SHORT", strategy.short, qty = orderQty, alert_message = "5STEP_SHORT")
+                                strategy.exit("S-X", "SHORT", stop = stopLine, limit = targetLine)
+                                shortEntrySignal := true
+                    phase := 0
+                    side := 0
+                else
+                    phase := 2
+
+        // Optional RTO-style *price-level* retest. This is not an institutional
+        // order-block detection algorithm; it waits for a pullback and reclaim.
+        if phase == 2 and bar_index > breakBar
+            bool retestUp = side == 1 and low <= bmsLevel + atr * retestNear and low >= bmsLevel - atr * retestDeep and close > bmsLevel and close > open and longConfDOK
+            bool retestDn = side == -1 and high >= bmsLevel - atr * retestNear and high <= bmsLevel + atr * retestDeep and close < bmsLevel and close < open and shortConfDOK
+            if retestUp or retestDn
+                float rawStop = side == 1 ? sweepExtreme - sweepATR * stopBuffATR : sweepExtreme + sweepATR * stopBuffATR
+                float stopDistance = math.abs(close - rawStop)
+                bool geometryOK = side == 1 ? rawStop < close : rawStop > close
+                bool riskOK = geometryOK and not na(stopDistance) and stopDistance >= atr * minStopATR and stopDistance <= atr * maxStopATR and strategy.equity > 0
+                if riskOK
+                    float qtyByRisk = strategy.equity * riskPct / 100 / (stopDistance * syminfo.pointvalue)
+                    float qtyByCap = strategy.equity * maxNotional / 100 / (close * syminfo.pointvalue)
+                    float orderQty = math.min(qtyByRisk, qtyByCap)
+                    if orderQty > 0
+                        stopLine := rawStop
+                        targetLine := side == 1 ? close + stopDistance * rr : close - stopDistance * rr
+                        if side == 1
+                            strategy.entry("LONG", strategy.long, qty = orderQty, alert_message = "5STEP_LONG")
+                            strategy.exit("L-X", "LONG", stop = stopLine, limit = targetLine)
+                            longEntrySignal := true
+                        else
+                            strategy.entry("SHORT", strategy.short, qty = orderQty, alert_message = "5STEP_SHORT")
+                            strategy.exit("S-X", "SHORT", stop = stopLine, limit = targetLine)
+                            shortEntrySignal := true
+                phase := 0
+                side := 0
+
+    if useTimeStop and strategy.position_size != 0 and strategy.opentrades > 0
+        if bar_index - strategy.opentrades.entry_bar_index(0) >= maxHoldBars
+            if strategy.position_size > 0
+                strategy.close("LONG", comment = "TimeExit")
+            else
+                strategy.close("SHORT", comment = "TimeExit")
+
+plot(showLevels ? prevHigh : na, "先前区间高点", color = color.new(color.red, 65), style = plot.style_linebr)
+plot(showLevels ? prevLow : na, "先前区间低点", color = color.new(color.aqua, 65), style = plot.style_linebr)
+plot(phase != 0 ? bmsLevel : na, "微结构确认/回踩价", color = color.yellow, style = plot.style_linebr, linewidth = 2)
+plot(stopLine, "止损价", color = color.red, style = plot.style_linebr, linewidth = 2)
+plot(targetLine, "止盈价", color = color.lime, style = plot.style_linebr, linewidth = 2)
+plotshape(showSweeps and longSweep, title = "下扫候选", style = shape.circle, location = location.belowbar, color = color.teal, size = size.tiny)
+plotshape(showSweeps and shortSweep, title = "上扫候选", style = shape.circle, location = location.abovebar, color = color.orange, size = size.tiny)
+plotshape(bmsUpSignal, title = "向上微结构确认", style = shape.triangleup, location = location.belowbar, color = color.aqua, size = size.tiny, text = "B")
+plotshape(bmsDownSignal, title = "向下微结构确认", style = shape.triangledown, location = location.abovebar, color = color.orange, size = size.tiny, text = "B")
+plotshape(longEntrySignal, title = "入场多", style = shape.labelup, location = location.belowbar, color = color.green, textcolor = color.white, text = "L")
+plotshape(shortEntrySignal, title = "入场空", style = shape.labeldown, location = location.abovebar, color = color.red, textcolor = color.white, text = "S")
+plot(barDelta, "估算每根K线Delta", display = display.data_window)
+plot(deltaClose, "估算日内CVD", display = display.data_window)
+plot(oi, "OI 原始值(可选)", display = display.data_window)
+plot(oiDelta, "OI变动(可选)", display = display.data_window)
+plot(funding, "Funding 原值(可选)", display = display.data_window)
+
+var table diag = table.new(position.top_right, 2, 6, border_width = 1)
+if barstate.islast and showPanel
+    table.cell(diag, 0, 0, "5-Step V1.1", bgcolor = color.new(color.blue, 45), text_color = color.white)
+    table.cell(diag, 1, 0, "研究版", bgcolor = color.new(color.blue, 45), text_color = color.white)
+    table.cell(diag, 0, 1, "高周期趋势")
+    table.cell(diag, 1, 1, trendLong and not trendShort ? "偏多" : trendShort and not trendLong ? "偏空" : "中性/双向")
+    table.cell(diag, 0, 2, "设置阶段")
+    table.cell(diag, 1, 2, phase == 0 ? "等待扫盘" : phase == 1 ? "等待结构确认" : "等待回踩")
+    table.cell(diag, 0, 3, "Delta设置")
+    table.cell(diag, 1, 3, deltaMode)
+    table.cell(diag, 0, 4, "OI")
+    table.cell(diag, 1, 4, na(oi) ? "未接入" : str.tostring(oi, "#.##"))
+    table.cell(diag, 0, 5, "Funding")
+    table.cell(diag, 1, 5, na(funding) ? "未接入" : str.tostring(funding, "#.########"))
+// ---------------------------------------------------------------
+// VERIFICATION COPY: exported telemetry is not a separate strategy.
+// Original signal/entry logic above has not been changed.
+// ---------------------------------------------------------------
+plot(barstate.isconfirmed ? (longSweep ? 1.0 : 0.0) : na, "SWEEP_sweep_long", display=display.data_window)
+plot(barstate.isconfirmed ? (shortSweep ? 1.0 : 0.0) : na, "SWEEP_sweep_short", display=display.data_window)
+plot(barstate.isconfirmed ? (bmsUpSignal ? 1.0 : 0.0) : na, "SWEEP_bms_up", display=display.data_window)
+plot(barstate.isconfirmed ? (bmsDownSignal ? 1.0 : 0.0) : na, "SWEEP_bms_down", display=display.data_window)
+plot(barstate.isconfirmed ? (longEntrySignal ? 1.0 : 0.0) : na, "SWEEP_entry_long", display=display.data_window)
+plot(barstate.isconfirmed ? (shortEntrySignal ? 1.0 : 0.0) : na, "SWEEP_entry_short", display=display.data_window)
+plot(barstate.isconfirmed ? (float(phase)) : na, "SWEEP_phase", display=display.data_window)
+plot(barstate.isconfirmed ? (float(side)) : na, "SWEEP_side", display=display.data_window)
+plot(barstate.isconfirmed ? (sweepExtreme) : na, "SWEEP_sweep_extreme", display=display.data_window)
+plot(barstate.isconfirmed ? (bmsLevel) : na, "SWEEP_bms_level", display=display.data_window)
+plot(barstate.isconfirmed ? (stopLine) : na, "SWEEP_stop_line", display=display.data_window)
+plot(barstate.isconfirmed ? (targetLine) : na, "SWEEP_target_line", display=display.data_window)
+plot(barstate.isconfirmed ? (barDelta) : na, "SWEEP_estimate_bar_delta", display=display.data_window)
