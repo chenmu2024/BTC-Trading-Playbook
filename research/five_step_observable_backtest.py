@@ -302,6 +302,46 @@ def simulate(events,bars,funds,variant,split):
             "targets":sum(t["type"]=="TARGET" for t in selected),
             "trade_details":selected}
 
+def signal_diagnostics(signals,bars):
+    """Explain 2022-26 missing-signal years without selecting profitable entries.
+
+    Count actual original signal-time A/B eligibility separately from stop
+    geometry; no new indicator and no future trade outcome.
+    """
+    buckets={}
+    for year in range(2022,2027):
+        for context in ("A","B"):
+            for side,label in ((1,"LONG"),(-1,"SHORT")):
+                for phase in ("BMS","RTO"):
+                    buckets[(year,context,label,phase)]={
+                      "event_count":0,"geometry_valid":0,"near_zone":0,
+                      "negative_funding":0,"positive_funding":0,
+                      "contrarian_funding":0,"streak3":0}
+    for sig in signals:
+        i=sig["signal_index"]+1
+        if i>=len(bars):continue
+        year=datetime.fromtimestamp(bars[i][0]/1000,timezone.utc).year
+        for context in ("A","B"):
+            if not sig[context]:continue
+            label="LONG" if sig["side"]==1 else "SHORT"
+            x=buckets[(year,context,label,sig["phase"])]
+            x["event_count"]+=1
+            x["near_zone"]+=int(sig["zone"])
+            rate=sig["funding_rate"]
+            if rate is not None:
+                x["negative_funding"]+=int(rate<0)
+                x["positive_funding"]+=int(rate>0)
+                x["contrarian_funding"]+=int(rate*sig["side"]<0)
+                x["streak3"]+=int(sig["funding_streak3"] and rate*sig["side"]<0)
+            entry=bars[i][1]*(1+sig["side"]*SLIP)
+            stop=sig["extreme"]-sig["side"]*0.2*sig["sweep_atr"]
+            distance=sig["side"]*(entry-stop)
+            x["geometry_valid"]+=int(distance>0 and 0.25*sig["atr"]<=distance<=3.0*sig["atr"])
+    return [{"year":y,"context":c,"side":side,"phase":ph,**buckets[(y,c,side,ph)]}
+            for y in range(2022,2027) for c in ("A","B")
+            for side in ("LONG","SHORT") for ph in ("BMS","RTO")]
+
+
 def research(data):
     bars,funds=data["klines"],data["funding"]
     if len(bars)<40000 or len(funds)<5000:raise ValueError("Insufficient historical archive")
@@ -316,6 +356,7 @@ def research(data):
             "funding_streak3_rule":"The latest three ALREADY SETTLED rates, strictly prior to signal bar open.",
             "independent_side_accounts":True,
             "sweep_counts":generate_signals.counts,"signal_count":len(signals),
+            "candidate_funnel_by_year":signal_diagnostics(signals,bars),
             "fees_per_side":FEE,"slippage_per_side":SLIP,
             "not_available":["historical tick CVD","historical OI","original Eric states",
                              "original SR v3.3 levels","historic SPX/DXY/gold regime"],
@@ -350,6 +391,12 @@ def markdown(r):
         for direction,entry in x["by_side"].items():
             fmt=lambda v: "—" if v is None else str(v)
             lines.append(f"| {x['variant']} | {x['split']} | {direction} | {entry['count']} | {fmt(entry['win_rate_pct'])} | {fmt(entry['profit_factor'])} | {fmt(entry['avg_trade_equity_pct'])} |")
+    lines+=["","## 逐年候选信号漏斗（进场之前，不按盈亏挑选）","",
+            "| 年份 | 情景 | 方向 | 阶段 | 信号数 | 止损几何合格 | 逆向费率 | 连续3次逆向费率 |",
+            "|---|---|---|---|---:|---:|---:|---:|"]
+    for x in r.get("candidate_funnel_by_year",[]):
+        if x["phase"]!="RTO":continue
+        lines.append(f"| {x['year']} | {x['context']} | {x['side']} | {x['phase']} | {x['event_count']} | {x['geometry_valid']} | {x['contrarian_funding']} | {x['streak3']} |")
     lines+=["","## 边界与缺失",""]+["- "+x for x in r["caveats"]]
     return "\n".join(lines)+"\n"
 
