@@ -63,3 +63,10 @@
 - 2025—2026 RTO+负Funding仅4笔，+0.0853%，PF1.2925；2022—2024此过滤组合**0笔**。不能得出增量有效性的统计结论。
 - 原脚本 `strong_support_resistance_v3_3.pine`、`eric_swing_filter_v1_9_10.pine`、`liquidity_sweep_v1_1_diagnostic.pine` 仍未完成逐K一致性验证：**代理研究结果绝不等于三份Pine联合策略回测**。
 - 最新研究报告：[research/RESULTS_2022_2026.md](research/RESULTS_2022_2026.md)。状态仍为RESEARCH_ONLY，不自动下单。
+
+## 2026-11-21 — Pine数据对照基础设施与Eric D3数学核心
+- 新增三份Pine导出侧本（原脚本不改），每根完整主图K输出强区中心/宽度/得分、Eric D3/状态/部分事件、Sweep阶段与信号；导出代码仍需TradingView实际编译。
+- `research/audit_tradingview_csv.py` 已有自动测试，能识别交易所行情错配、时间戳超前、缺字段及Eric D3数值偏差；**截至当前还没有真实TradingView导出CSV**，因此实际市场对照状态 = NOT_TESTED。
+- `engine/eric_core.py` 已完成原始数学核心的独立移植并用于报告，有限历史播种；数学结果尚未与Pine实机逐K对齐；反转/背离/MTF状态始终UNKNOWN。
+- GitHub Actions新增 `Pine export provenance audit (CSV only)` 工作流；无CSV时应输出NOT_TESTED，不将CI通过误认为逐K一致。
+- 下一验收门槛：提供/取得包含2026年历史的TradingView CSV，逐K检查源码/成交/状态事件，再考虑升级算法等价状态。

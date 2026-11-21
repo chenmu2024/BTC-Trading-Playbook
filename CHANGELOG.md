@@ -29,3 +29,9 @@
 - 新增多年事件研究、4h双Pivot确认支撑代理、SH→BMS→RTO仅多头代理与仓位/成本/止损止盈/资金费用模拟。
 - 自动CI复算研究报告并提供JSON/Markdown Artifacts；添加样本统计与信号数量回归测试。
 - 研究输出显示负Funding与回踩组合样本不足、未证实稳定正期望；原始Pine v3.3/Eric/V1.1逐K等价性仍UNKNOWN。
+
+## 2026-11-21 — Pine validation exports, chart-data audit, Eric D3 core
+- 原样保留三份用户Pine原脚本；新增独立遥测版用于TradingView导出CSV，带1H/4H等周期状态和必要的来源收盘时点字段。
+- 新增CSV审计脚本及安全要求：OHLC必须与Binance BTCUSDT永续价格/时间匹配，拒绝不明时区及明显未来信号；缺样本状态NOT_TESTED。
+- 根据Eric v1.9.10源代码实现LC2→Wilder RSI20→StochRSI26→K4→D3数学核心，并在BTC行情报告中单独展示；完整Episode/背离状态不可推断。
+- 添加全部相关单元测试；不调整历史亏损策略以迎合收益，不启用实盘自动交易。

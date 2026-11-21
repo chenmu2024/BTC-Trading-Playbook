@@ -14,3 +14,7 @@
 
 9. 当解释Funding作为潜在底部因素时，必须阅读 [research/RESULTS_2022_2026.md](research/RESULTS_2022_2026.md)，同时区分“结算后固定持有事件研究”和“确认结构后交易”的不同统计母体；不能宣称负Funding已证实有稳定的多头利润优势。
 10. 新增 `research/causal_structure_backtest.py` 是独立PROXY，不是用户的Strong MTF SR v3.3 / Eric / Pine V1.1联合策略。跨年度样本量为0或4时必须明确“证据不足”，严禁计算貌似可靠的胜率预测。
+
+11. 每次分析可计算 `engine/eric_core.py` 中的D3数学核心，并在报告中标注 `CORE_FORMULA_PORT_UNVERIFIED`；禁止将D3数值直接解释为Eric v1.9.10“反转超卖”“严格底背离”或MTF共振已触发。
+12. 三份Pine已建立[数据导出侧本](pine/validation)及[校验说明](docs/TRADINGVIEW_PARITY.md)。如果未实际取得TradingView图表CSV或未完成实机编译，必须保持原始指标逐K等价状态NOT_TESTED；CI单元测试不能替代平台验证。
+13. 若取得CSV，先运行 `research/audit_tradingview_csv.py` 检查时间、OHLC和来源周期，再比较Eric基础D3，后续才考虑原始状态机与Python逐K匹配。

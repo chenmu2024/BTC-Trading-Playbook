@@ -60,3 +60,10 @@
 - [4H双Pivot支撑代理](research/mtf_support_proxy.py) 必须经确认后才生效，**尚不等于用户的Strong MTF SR v3.3**，也未复刻 Eric v1.9.10。
 - 结果不支持宣称整体有稳定盈利优势。GitHub CI会逐次复算并保存多年度事件/结构研究的JSON与Markdown结果，可在Actions Artifacts查看。
 - 运行：`python -m research.multiyear_event_study`；`python -m research.causal_structure_backtest`。
+
+## Pine 原始规则逐K数据核验（V0.1，已构建工具）
+- **具体说明与数据导出方法**：[docs/TRADINGVIEW_PARITY.md](docs/TRADINGVIEW_PARITY.md)。
+- **三份独立Pine遥测导出版**：[pine/validation](pine/validation)。原版 v3.3 / Eric v1.9.10 / Sweep V1.1 未被修改。
+- **核验程序**：[research/audit_tradingview_csv.py](research/audit_tradingview_csv.py)，可检查Binance 1小时OHLC/时间戳是否与TradingView CSV一致、来源周期是否提前收盘，以及Eric数学D3是否接近。
+- **Eric D3数学核心**：[engine/eric_core.py](engine/eric_core.py) 已按原脚本LC2→RSI20→Stoch26→K4→D3计算并接入日常行情报告，但**未完成真正的Pine导出逐K对照**；Episode/反转/严格背离仍不可替代为代理。
+- 无CSV导出时只能声称“验证工具完成、数据尚未核验”，**不可声称完整指标等价**。
