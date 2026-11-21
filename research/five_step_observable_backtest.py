@@ -33,6 +33,7 @@ class Variant:
     phase: str
     funding: str
     require_zone: bool=False
+    direction: int=0  # 0 BOTH, 1 LONG-only, -1 SHORT-only; separate simulated accounts
 
 VARIANTS=(
     Variant("A_BMS","A","BMS","ANY"),
@@ -43,6 +44,16 @@ VARIANTS=(
     Variant("B_RTO","B","RTO","ANY"),
     Variant("B_RTO_FUND","B","RTO","CONTRARIAN"),
     Variant("B_RTO_STREAK3","B","RTO","STREAK3",True),
+    # Fixed, not tuned, direction-specific research cohorts; individual accounts.
+    Variant("A_LONG_BMS","A","BMS","ANY",False,1),
+    Variant("A_LONG_RTO","A","RTO","ANY",False,1),
+    Variant("A_LONG_RTO_NEG","A","RTO","CONTRARIAN",False,1),
+    Variant("B_LONG_RTO","B","RTO","ANY",False,1),
+    Variant("B_LONG_RTO_NEG","B","RTO","CONTRARIAN",False,1),
+    Variant("B_LONG_RTO_STREAK3","B","RTO","STREAK3",False,1),
+    Variant("A_SHORT_RTO","A","RTO","ANY",False,-1),
+    Variant("B_SHORT_RTO","B","RTO","ANY",False,-1),
+    Variant("B_SHORT_RTO_POS","B","RTO","CONTRARIAN",False,-1),
 )
 
 def iso(ms):
@@ -95,6 +106,16 @@ def htf(bars,hours):
         status.append((s,low,high))
     return [status[i//hours-1] if i//hours>0 else (0,None,None)
             for i in range(len(bars))]
+
+def funding_at_signal(funds,fts,bar_open_time,side):
+    """Only settlements BEFORE current bar opens. No fi+1 future lookup."""
+    fi=bisect.bisect_left(fts,bar_open_time)-1
+    if fi<0 or bar_open_time-fts[fi]>16*HOUR:
+        return None,False
+    rate=funds[fi][1]
+    streak=fi>=2 and all(funds[k][1]*side<0 for k in (fi-2,fi-1,fi))
+    return rate,streak
+
 
 def generate_signals(bars,funds):
     """No lookahead: 1h sweep->BMS within 5->optional RTO within 5."""
@@ -158,11 +179,7 @@ def generate_signals(bars,funds):
         fourhr=four[i][0]
         a_context=(daily==side and fourhr==side)
         b_context=(not a_context and st["near_zone"])
-        fi=bisect.bisect_left(fts,bars[i][0])-1  # strictly prior settlement
-        rate=funds[fi][1] if fi>=0 and bars[i][0]-fts[fi]<=16*HOUR else None
-        streak=(rate is not None and fi>=2 and
-                (all(funds[k][1]<0 for k in (fi-2,fi-1,fi+1)) if side==1
-                 else all(funds[k][1]>0 for k in (fi-2,fi-1,fi+1))))
+        rate,streak=funding_at_signal(funds,fts,bars[i][0],side)
         yield {"signal_index":i,"side":side,"phase":phase,"A":a_context,"B":b_context,
                "zone":st["near_zone"],"extreme":st["extreme"],"sweep_atr":st["sweep_atr"],
                "bms_level":st["bms_level"],"atr":atr[i],
@@ -171,6 +188,9 @@ def generate_signals(bars,funds):
     generate_signals.counts=dict(counters)
 
 def matches(signal,variant):
+    if variant.direction not in (-1,0,1):
+        raise ValueError("Unsupported strategy direction")
+    if variant.direction and signal["side"]!=variant.direction:return False
     if signal["phase"]!=variant.phase or not signal[variant.context]:return False
     if variant.require_zone and not signal["zone"]:return False
     if variant.funding=="ANY":return True
@@ -293,11 +313,14 @@ def research(data):
             "bars":len(bars),"funding_records":len(funds),
             "period":[iso(bars[0][0]),iso(bars[-1][0])],
             "cutover":iso(CUT),
+            "funding_streak3_rule":"The latest three ALREADY SETTLED rates, strictly prior to signal bar open.",
+            "independent_side_accounts":True,
             "sweep_counts":generate_signals.counts,"signal_count":len(signals),
             "fees_per_side":FEE,"slippage_per_side":SLIP,
             "not_available":["historical tick CVD","historical OI","original Eric states",
                              "original SR v3.3 levels","historic SPX/DXY/gold regime"],
             "caveats":["Exploratory parameter variations over previously inspected history, not untouched OOS",
+                       "Only direction-specific cohorts have independent account equity; mixed-account side summaries are NOT independent.",
                        "Only 1h OHLCV + settled funding; 1D/4H structure and 4H zone are explicit proxies",
                        "Intrabar order unknown; stop takes priority over target",
                        "Cashflow uses entry-notional funding approximation and omits exit-hour ambiguity",
