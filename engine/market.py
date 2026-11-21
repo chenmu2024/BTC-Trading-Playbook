@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from .funding import funding_regime
+from .eric_core import latest_d3
 
 BASE = "https://fapi.binance.com"
 FUTURES_DATA = "https://fapi.binance.com"
@@ -230,6 +231,7 @@ def analyze(snapshot: dict, config: dict, repo_commit: str = "unknown") -> dict:
     areas = {tf: levels(frames.get(tf, []), lkb) for tf in ("1d", "4h", "1h")}
     candidates = sweep_candidates(frames.get("1h", []), lkb, cbars, vol)
     delta = delta_summary(frames.get("1h", []))
+    eric_core_math = {tf: latest_d3(frames.get(tf, [])) for tf in INTERVALS}
     derivatives_result = derivatives(snapshot)
     fp = config.get("funding_research", {})
     funding_r = funding_regime(snapshot.get("funding_history"),
@@ -253,7 +255,7 @@ def analyze(snapshot: dict, config: dict, repo_commit: str = "unknown") -> dict:
                 data_errors=snapshot.get("errors", {}), decision=state, directional_context=bias,
                 trends=summaries, areas=areas, sweep_observations=candidates,
                 candle_taker_delta=delta, derivatives=derivatives_result,
-                funding_regime=funding_r,
+                funding_regime=funding_r, eric_core_math=eric_core_math,
                 pine_parity={"strong_support_resistance_v3_3":"UNKNOWN",
                              "eric_swing_v1_9_10":"UNKNOWN",
                              "liquidity_sweep_v1_1":"UNKNOWN"},
@@ -272,6 +274,11 @@ def markdown_report(r: dict) -> str:
     for tf in ("1w", "1d", "4h", "1h", "30m"):
         d = r["trends"][tf]
         lines.append(f"- {tf}: {d['status']}; close={d.get('close', 'unknown')}, EMA50={d.get('fast_ema', 'unknown')}, EMA200={d.get('slow_ema', 'unknown')}; 最新完整K结束={d.get('last_closed_bar_utc', 'unknown')}")
+    lines += ["", "## Eric D3数学核心（未通过TradingView逐K验证）"]
+    for tf in ("1w","1d","4h","1h","30m"):
+        d = r.get("eric_core_math", {}).get(tf, {})
+        lines.append(f"- {tf}: {d.get('status','UNKNOWN')}; D3={d.get('d3','UNKNOWN')}; RSI20={d.get('rsi','UNKNOWN')}; 类别={d.get('relative_extreme','UNKNOWN')}")
+    lines.append("- 注意：LC2→RSI20→Stoch26→K4→D3核心暂未做Pine导出对照；不等于Eric的反转、背离、Episode或MTF共振事件。")
     lines.append("\n## 结构位置（非 v3.3 官方值）")
     for tf in ("1d", "4h", "1h"):
         a = r["areas"][tf]
