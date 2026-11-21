@@ -40,3 +40,13 @@ jobs:
           path: output/multiyear/
           if-no-files-found: warn
           retention-days: 30
+      - name: Run causal SH-BMS-RTO long-only proxy study
+        run: python -m research.causal_structure_backtest --output-dir output/structure
+      - name: Save causal structure study artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: structural-backtest-research
+          path: output/structure/
+          if-no-files-found: warn
+          retention-days: 30
