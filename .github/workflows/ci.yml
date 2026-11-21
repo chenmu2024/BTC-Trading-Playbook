@@ -50,3 +50,13 @@ jobs:
           path: output/structure/
           if-no-files-found: warn
           retention-days: 30
+      - name: Run five-step observable strategy A/B long-short backtest
+        run: python -m research.five_step_observable_backtest --output-dir output/five_step
+      - name: Keep 5-step metrics and every simulated trade
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-five-step-long-short-backtest
+          path: output/five_step/
+          if-no-files-found: warn
+          retention-days: 30
