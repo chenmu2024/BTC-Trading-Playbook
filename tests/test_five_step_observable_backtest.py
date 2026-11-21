@@ -89,6 +89,11 @@ class FiveStepObservableTests(unittest.TestCase):
         self.assertTrue(r["signal_count"]>0)
         self.assertIn("historical OI",r["not_available"])
         self.assertIn("historical tick CVD",r["not_available"])
+        funnel=r["candidate_funnel_by_year"]
+        self.assertEqual(len(funnel),5*2*2*2)
+        self.assertTrue(all(0<=row["geometry_valid"]<=row["event_count"] for row in funnel))
+        self.assertTrue(all(0<=row["contrarian_funding"]<=row["event_count"] for row in funnel))
+        self.assertTrue(all(0<=row["streak3"]<=row["contrarian_funding"] for row in funnel))
         a={x["variant"]+"__"+x["split"]:x for x in r["results"]}
         for phase in ("A_LONG_RTO","B_LONG_RTO","B_LONG_RTO_NEG","A_SHORT_RTO"):
             for split in ("2022_2024","2025_2026"):
