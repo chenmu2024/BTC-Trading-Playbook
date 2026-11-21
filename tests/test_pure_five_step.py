@@ -41,10 +41,11 @@ def extend(a, *, o=100., h=101., l=99., c=100.):
 
 
 def event(a):
+    """Select the ORIGINAL SH, not a new sweep on an invalidation bar."""
     out=observe_funnel(a,settings())
-    self_side=out["latest_by_side"]["LONG"]
-    assert self_side is not None, out
-    return self_side
+    matches=[x for x in out["events"] if x["sweep_index"]==65 and x["direction"]=="LONG"]
+    assert len(matches)==1, out
+    return matches[0]
 
 
 class FunnelPriceActionTests(unittest.TestCase):
