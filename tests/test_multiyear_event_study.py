@@ -24,6 +24,11 @@ class MultiYearFundingTests(unittest.TestCase):
         self.assertTrue(s["results"]["24"]["train"]["negative"]["n"] > 50)
         self.assertTrue(s["results"]["168"]["test"]["negative"]["n"] > 50)
         self.assertEqual(self.study["status"], "RESEARCH_ONLY")
+        # Fixed archive regressions: these are event statistics, not trading profits.
+        v=self.study["annual"]["returns"]
+        self.assertAlmostEqual(v["2022"]["24"]["negative"]["mean_net_pct"],0.0883,delta=0.002)
+        self.assertAlmostEqual(v["2023"]["168"]["negative"]["mean_net_pct"],3.777,delta=0.002)
+        self.assertAlmostEqual(v["2026"]["168"]["negative"]["nonoverlap"]["mean_net_pct"],-1.2392,delta=0.002)
 
 
 if __name__ == "__main__":
