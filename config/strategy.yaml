@@ -10,6 +10,8 @@ analysis:
   require_closed_candles: true
   timeframes: ["1w", "1d", "4h", "1h", "30m"]
   primary_execution_timeframe: "1h"
+  primary_method: pure_five_step
+  trade_signal_status: research_only
   default_missing_indicator_state: UNKNOWN
 trend:
   model: ema_proxy
@@ -25,6 +27,8 @@ swing:
   d3_math_source: engine/eric_core.py
   d3_math_port_status: CORE_FORMULA_PORT_UNVERIFIED
   d3_is_entry_signal: false
+  research_overlay_enabled: false
+  entry_gate_enabled: false
   canonical_source: pine/eric_swing_filter_v1_9_10.pine
   pine_compile_replay_verified: false
   external_parity_verified: false
@@ -32,8 +36,16 @@ liquidity:
   canonical_source: pine/liquidity_sweep_v1_1_diagnostic.pine
   lookback_bars: 20
   confirm_bars: 4
+  retest_bars: 5
+  microstructure_lookback_bars: 3
   average_volume_bars: 20
   minimum_sweep_volume_ratio: 0.8
+  minimum_sweep_wick_fraction: 0.30
+  minimum_sweep_penetration_atr: 0.10
+  minimum_sweep_reclaim_atr: 0.05
+  minimum_bms_body_atr: 0.20
+  retest_touch_atr_above: 0.15
+  retest_touch_atr_below: 0.35
   atr_period: 14
   stop_atr_buffer: 0.2
 flow:
@@ -62,4 +74,5 @@ validation:
   v1_0_backtest_profitable: false
   v1_1_backtest_verified: false
   full_strategy_profitable_verified: false
+  frozen_backtest_profile_matches_current_analysis: false
   allow_claims_of_live_indicator_parity: false
