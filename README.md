@@ -1,6 +1,6 @@
 # BTC Trading Playbook
 
-基于多周期结构、强支撑/压力、Eric Swing Filter、流动性扫盘与订单流的 **BTCUSDT 交易研究与人工决策支持仓库**。
+以**纯五步交易漏斗**（多周期结构 → 历史流动性 → SH/BMS/RTO价格行为 → Volume/Delta/OI/Funding → 风险执行）为默认主线的 **BTCUSDT 交易研究与人工决策支持仓库**。Eric只作为可选独立研究附录，不参与买卖、否决或WAIT决策。
 
 > ⚠️ Research only / 非实盘自动下单系统。历史回测曾出现亏损；不能将脚本信号视为获利保证。仓库不存放 API 密钥、交易账号或个人持仓。
 
@@ -24,7 +24,7 @@
 ## 每次分析的输入与输出
 **输入**：本仓库当前 commit 和配置、BTCUSDT 指定交易所/市场、带时间戳的已收盘 K 线、必要时可获得的 OI/资金费率/成交数据。
 
-**输出**：数据时间和完整度、日线/4H趋势、已确认支撑/压力、Eric状态、SH/BMS/RTO状态、成交量与订单流证据、多空情景、明确触发/否决条件、止损/目标与风险预算、最终状态（可评估/等待/禁止），以及下次需复核的事项。
+**输出**：数据时间、日线/4H结构、历史前高低、逐项SH/BMS/RTO状态/截止时间/失效原因、Volume/Delta/OI/Funding反证、多空条件和风险否决、最终WAIT。Eric默认不出现；仅当用户明确要求独立研究时，在报告末尾作为不影响决策的附录。
 
 不能读取的指标必须标为 **未知/未验证**，不能以其他信号替代并声称已经验证。
 
@@ -84,3 +84,9 @@
 - 负Funding逆势只做多RTO：2025—2026两笔，+0.7541%，全部来自2026；此前为0笔。连续3期负Funding在该独立多头模型中**0笔交易**。
 - 本研究`BMS`确认5根K、成交量≥1.0×过去20根均值，与日常配置4根、0.8×**不同**。历史实验代码自身是参数来源，不能把两个版本的业绩当成同一策略。
 - 运行：`python -m research.five_step_observable_backtest --output-dir output/five_step`，然后 `python -m research.focus_long_report --input output/five_step/results.json --output-dir output/long_focus`。
+
+## 当前默认：Pure Five-Step v0.4（Eric独立研究）
+- [纯五步规范和状态机说明](docs/PURE_FIVE_STEP.md) 为新分析入口。
+- [engine/five_step.py](engine/five_step.py) 对每个已收盘1H候选跟踪 SH→BMS→RTO，明确失效、超时与时间戳；[engine/market.py](engine/market.py)按五步生成日常报告。
+- 默认 `swing.research_overlay_enabled=false`，不计算Eric；显式开启只增加研究附录，不影响主线判断。
+- **未修改五年冻结回测程序和收益**。日常配置4根BMS确认/0.8倍成交量与冻结回测5根/1.0倍不同，不能据此声称历史盈利能力获得改善。
