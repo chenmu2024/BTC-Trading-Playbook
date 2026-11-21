@@ -62,11 +62,11 @@
 - 数据文件：[research/data/multiyear](data/multiyear)
 
 复算命令：
-\`\`\`bash
+```bash
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 python -m research.five_step_observable_backtest --output-dir output/five_step
-\`\`\`
+```
 
 ## 下一阶段（必须清楚区分）
 
