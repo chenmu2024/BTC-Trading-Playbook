@@ -60,3 +60,13 @@ jobs:
           path: output/five_step/
           if-no-files-found: warn
           retention-days: 30
+      - name: Independent long funding study by year
+        run: python -m research.focus_long_report --input output/five_step/results.json --output-dir output/long_focus
+      - name: Preserve independent long-only vs funding report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-independent-long-funding-focus
+          path: output/long_focus/
+          if-no-files-found: warn
+          retention-days: 30
