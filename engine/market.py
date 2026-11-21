@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from .funding import funding_regime
 from .eric_core import latest_d3
+from .five_step import observe_funnel
 
 BASE = "https://fapi.binance.com"
 FUTURES_DATA = "https://fapi.binance.com"
@@ -230,8 +231,15 @@ def analyze(snapshot: dict, config: dict, repo_commit: str = "unknown") -> dict:
     summaries = {tf: trend(frames.get(tf, []), fast, slow) for tf in INTERVALS}
     areas = {tf: levels(frames.get(tf, []), lkb) for tf in ("1d", "4h", "1h")}
     candidates = sweep_candidates(frames.get("1h", []), lkb, cbars, vol)
+    five_step = observe_funnel(frames.get("1h", []), config["liquidity"])
     delta = delta_summary(frames.get("1h", []))
-    eric_core_math = {tf: latest_d3(frames.get(tf, [])) for tf in INTERVALS}
+    research_eric = bool(config.get("swing", {}).get("research_overlay_enabled", False))
+    if config.get("swing", {}).get("entry_gate_enabled", False):
+        raise ValueError("Eric cannot be an entry gate in the pure five-step profile")
+    eric_overlay = ({"status":"RESEARCH_ONLY_NOT_A_GATE",
+                     "affects_decision":False,
+                     "core_math":{tf:latest_d3(frames.get(tf, [])) for tf in INTERVALS}}
+                    if research_eric else {"status":"DISABLED", "affects_decision":False})
     derivatives_result = derivatives(snapshot)
     fp = config.get("funding_research", {})
     funding_r = funding_regime(snapshot.get("funding_history"),
@@ -249,66 +257,93 @@ def analyze(snapshot: dict, config: dict, repo_commit: str = "unknown") -> dict:
     bias = ("BEAR" if summaries["1d"]["status"] == summaries["4h"]["status"] == "BEAR"
             else "BULL" if summaries["1d"]["status"] == summaries["4h"]["status"] == "BULL"
             else "MIXED_OR_NEUTRAL")
-    return dict(engine="public-data-proxy-0.3", repo_commit=repo_commit,
+    return dict(engine="pure-five-step-research-0.4", repo_commit=repo_commit,
                 exchange=snapshot.get("exchange"), market=snapshot.get("market"),
                 symbol=snapshot.get("symbol"), fetched_at_utc=snapshot.get("fetched_at_utc"),
                 data_errors=snapshot.get("errors", {}), decision=state, directional_context=bias,
-                trends=summaries, areas=areas, sweep_observations=candidates,
+                primary_method="PURE_FIVE_STEP",
+                decision_reason=("Required 1D/4H/1H data incomplete" if state=="DATA_INSUFFICIENT" else
+                                 "Research-only proxy; full execution signal is unverified"),
+                trends=summaries, areas=areas, five_step_funnel=five_step,
+                sweep_observations=candidates,
                 candle_taker_delta=delta, derivatives=derivatives_result,
-                funding_regime=funding_r, eric_core_math=eric_core_math,
+                funding_regime=funding_r, research_overlays={"eric":eric_overlay},
                 pine_parity={"strong_support_resistance_v3_3":"UNKNOWN",
                              "eric_swing_v1_9_10":"UNKNOWN",
                              "liquidity_sweep_v1_1":"UNKNOWN"},
                 risk=dict(trend_trade_max_fraction=config["risk"]["trend_trade_max_equity_fraction"],
                           countertrend_max_fraction=config["risk"]["countertrend_max_equity_fraction"]),
-                caution="Research-only; no validated trade entry, backtest parity or auto execution")
+                caution="Research-only, pure five-step price-action proxy; Eric excluded from all entry/WAIT decisions; no auto execution")
 
 
 def markdown_report(r: dict) -> str:
-    lines = [f"# BTCUSDT 交易观察 | {r.get('fetched_at_utc', 'unknown')}",
-             "", f"- 仓库提交：{r['repo_commit']}",
+    """Present pure five-step first, without Eric in the default decision path."""
+    lines = [f"# BTCUSDT｜纯五步交易漏斗 | {r.get('fetched_at_utc','unknown')}",
+             "",
+             f"- 数据/仓库版本：{r['repo_commit']}",
              f"- 市场：{r['exchange']} {r['market']} {r['symbol']}",
-             f"- 决策：**{r['decision']}**；高周期环境：**{r['directional_context']}**",
-             "- 交易信号：目前只支持基础代理计算；Eric/强支撑压力/完整SH+BMS+RTO均未验证一致性。",
-             "", "## 已收盘K线趋势代理"]
-    for tf in ("1w", "1d", "4h", "1h", "30m"):
-        d = r["trends"][tf]
-        lines.append(f"- {tf}: {d['status']}; close={d.get('close', 'unknown')}, EMA50={d.get('fast_ema', 'unknown')}, EMA200={d.get('slow_ema', 'unknown')}; 最新完整K结束={d.get('last_closed_bar_utc', 'unknown')}")
-    lines += ["", "## Eric D3数学核心（未通过TradingView逐K验证）"]
+             f"- 主流程：{r.get('primary_method', 'PURE_FIVE_STEP')}",
+             f"- 决策：**{r['decision']}**；原因：{r.get('decision_reason','研究模型未确认')}",
+             "- 仅以已收盘K线和可获取成交/资金费率解释；原Pine信号未逐K验证，绝不自动下单。"]
+    lines += ["", "## Step 1｜大周期结构（已收盘K）"]
     for tf in ("1w","1d","4h","1h","30m"):
-        d = r.get("eric_core_math", {}).get(tf, {})
-        lines.append(f"- {tf}: {d.get('status','UNKNOWN')}; D3={d.get('d3','UNKNOWN')}; RSI20={d.get('rsi','UNKNOWN')}; 类别={d.get('relative_extreme','UNKNOWN')}")
-    lines.append("- 注意：LC2→RSI20→Stoch26→K4→D3核心暂未做Pine导出对照；不等于Eric的反转、背离、Episode或MTF共振事件。")
-    lines.append("\n## 结构位置（非 v3.3 官方值）")
-    for tf in ("1d", "4h", "1h"):
-        a = r["areas"][tf]
-        lines.append(f"- {tf}: {a.get('status')}, 前{a.get('lookback','?')}根已收盘K高点={a.get('prior_high','?')}，低点={a.get('prior_low','?')}")
-    lines += ["", "## 近期1小时扫盘候选（非原Pine信号）"]
-    if r["sweep_observations"]:
-        for x in r["sweep_observations"]:
-            lines.append(f"- {x['direction']}: {x['stage']}, 扫盘K结束={x['sweep_bar_utc']}, 参考={x['swept_reference']}, 极值={x['sweep_extreme']}")
-    else:
-        lines.append("- 当前窗口无符合代理定义的扫盘候选。")
-    d = r["candle_taker_delta"]
-    lines += ["", "## 成交与衍生品",
-              f"- K线主动成交量差：{d.get('status')}, 最近1H={d.get('last_1h_delta_btc','?')} BTC，24H净值={d.get('last_24h_net_delta_btc','?')} BTC（不是逐笔CVD）。"]
-    for key in ("oi", "funding"):
-        lines.append(f"- {key.upper()}: {json.dumps(r['derivatives'][key], ensure_ascii=False)}")
-    fr = r.get("funding_regime", {})
-    lines += ["", "## 资金费率逆向观察（研究）",
-              f"- 状态：{fr.get('status', 'UNKNOWN')} / {fr.get('regime', 'UNKNOWN')}",
-              f"- 最近结算：{fr.get('last_funding_time_utc', 'UNKNOWN')}，费率：{fr.get('last_rate_percent', 'UNKNOWN')}%",
-              f"- 8h等效：{fr.get('last_8h_equivalent_percent', 'UNKNOWN')}%；连续负费率：{fr.get('negative_streak', 'UNKNOWN')}次",
-              f"- 最低分位排名（小=更负）：{fr.get('percentile_rank', 'UNKNOWN')}；近7天负值占比：{fr.get('negative_share_last_7d', 'UNKNOWN')}",
-              "- 负费率只是潜在逆向观察，必须等已确认支撑/价格结构信号；不单独做多。"]
-    if r["data_errors"]:
-        lines += ["", "## 数据获取异常"]
-        for key, val in r["data_errors"].items():
-            lines.append(f"- {key}: {val}")
-    lines += ["", "## 条件分析与失效",
-              "- 多头候选：已知支撑区域的下扫收回 → 后续结构确认 → RTO确认；任何一步缺失均等待。",
-              "- 空头候选：已知压力区域的上扫收回 → 后续结构确认 → RTO确认；任何一步缺失均等待。",
-              "- 强区、Eric与V1.1原指标值目前未复现；不可依据这里的代理水平生成精确实盘入场、止损或止盈价。",
-              "- 风险研究上限：顺势0.5%权益、逆势0.25%权益；不是下单建议。",
-              "", "> 报告仅为定时点条件观察，不会后台运行或自动下单。"]
-    return "\n".join(lines) + "\n"
+        d = r["trends"][tf]
+        lines.append(f"- {tf}：{d['status']}；收盘={d.get('close','UNKNOWN')}；EMA50={d.get('fast_ema','UNKNOWN')}；EMA200={d.get('slow_ema','UNKNOWN')}；K线结束={d.get('last_closed_bar_utc','UNKNOWN')}")
+    lines.append(f"- 日线＋4H共同背景：**{r['directional_context']}**；趋势/区间并不保证方向。")
+
+    lines += ["", "## Step 2｜已知流动性位置（前高/前低代理，非v3.3）"]
+    for tf in ("1d","4h","1h"):
+        a=r["areas"][tf]
+        lines.append(f"- {tf}：{a.get('status','UNKNOWN')}；此前{a.get('lookback','?')}根已收盘K高={a.get('prior_high','UNKNOWN')}、低={a.get('prior_low','UNKNOWN')}；**不等于真实止损挂单分布**。")
+
+    lines += ["", "## Step 3｜SH → BMS → RTO（纯价格结构代理）"]
+    funnel=r.get("five_step_funnel",{})
+    lines.append(f"- 模型状态：{funnel.get('status','UNKNOWN')}；确认BMS窗口={funnel.get('bms_confirm_window_bars','?')}根；RTO等待={funnel.get('rto_window_bars','?')}根；严格检查时间超限/扫盘失效。")
+    for direction in ("LONG","SHORT"):
+        e=funnel.get("latest_by_side",{}).get(direction)
+        if not e:
+            lines.append(f"- {direction}：近期无符合严格定义的SH。")
+            continue
+        lines.append(
+            f"- {direction}：**{e['status']}**；SH结束={e['sweep_close_utc']}；"
+            f"此前流动性参考={e['reference']}，扫盘极值={e['sweep_extreme']}；"
+            f"BMS需要收盘突破={e['bms_level']}；"
+            f"BMS={e.get('bms_close_utc') or '尚未确认'}；"
+            f"RTO={e.get('rto_close_utc') or '尚未确认'}；"
+            f"候选BMS截止={e['bms_deadline_utc']}。")
+        if e["status"].startswith("EXPIRED") or e["status"].startswith("INVALIDATED"):
+            lines.append(f"  - {direction}旧候选已失效/超时；后续上涨/下跌**不能事后补写**为旧信号成功。")
+        if e["status"]=="CONFIRMED_RTO":
+            lines.append(f"  - {direction} RTO已在历史K线上确认，但仅是代理事件；不等于现在可直接成交。")
+    lines.append("- 尚无v1.1原始Pine逐K等价性，也未验证这些代理触发带来稳定盈利；**不自动产生买/卖信号**。")
+
+    lines += ["", "## Step 4｜成交量 / OI / 已结算Funding反证"]
+    delta=r["candle_taker_delta"]
+    lines.append(f"- Binance K线taker方向：{delta.get('status')}，最近1H净Delta={delta.get('last_1h_delta_btc','UNKNOWN')} BTC，最近24H={delta.get('last_24h_net_delta_btc','UNKNOWN')} BTC（**不是逐笔CVD**）。")
+    for key in ("oi","funding"):
+        lines.append(f"- {key.upper()}：{json.dumps(r['derivatives'][key],ensure_ascii=False)}")
+    fr=r.get("funding_regime",{})
+    lines += [
+        f"- 已结算Funding观察：{fr.get('status','UNKNOWN')} / {fr.get('regime','UNKNOWN')}；"
+        f"最新费率={fr.get('last_rate_percent','UNKNOWN')}%；结算={fr.get('last_funding_time_utc','UNKNOWN')}；"
+        f"连续负值={fr.get('negative_streak','UNKNOWN')}次；历史最低分位={fr.get('percentile_rank','UNKNOWN')}。",
+        "- 负费率提示潜在逆向机会，但不是开多指令；OI不能推断哪一侧单独增仓。"]
+
+    lines += ["", "## Step 5｜交易计划、失效与风险否决",
+              "- **做多候选**：先定义已知低点附近新SH，随后在确认窗口内向上BMS，再等待RTO；以**新扫盘极值**及当时ATR确定失效位置。当前报告不声称已验证入场。",
+              "- **做空候选**：已知高点附近新SH，随后向下BMS，再RTO；止损/目标必须与多头独立计算。",
+              f"- 风险研究上限：顺势权益{100*r['risk']['trend_trade_max_fraction']:.2f}%，逆势权益{100*r['risk']['countertrend_max_fraction']:.2f}%；实际风险可能高于预设。",
+              "- 没有已确认价、止损距离、可实现的净2R和成本复核时：**WAIT**，不追单。",
+              "- 当前执行状态：**"+r["decision"]+"**（非交易指令）。"]
+    if r.get("data_errors"):
+        lines += ["", "## 数据缺口与获取异常"]
+        for k,v in r["data_errors"].items():
+            lines.append(f"- {k}：{v}")
+    eric=r.get("research_overlays",{}).get("eric",{})
+    if eric.get("status")=="RESEARCH_ONLY_NOT_A_GATE":
+        lines += ["", "## 研究附录｜Eric D3（主动启用，完全不影响五步决策）"]
+        for tf in ("1w","1d","4h","1h","30m"):
+            d=eric["core_math"].get(tf,{})
+            lines.append(f"- {tf}：{d.get('status','UNKNOWN')}；D3={d.get('d3','UNKNOWN')}")
+        lines.append("- D3数学核心尚未与原Pine逐K一致性验收；未计算Episode/背离/反转。**不能参与入场/否决**。")
+    return "\n".join(lines)+"\n"
